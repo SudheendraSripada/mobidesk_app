@@ -32,6 +32,7 @@ class MyHomePage extends StatefulWidget {
 class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   static const _streamChannel = MethodChannel('com.mobidesk/stream');
   bool _shouldStartStreamOnResume = false;
+  bool _isStreaming = false;
 
   @override
   void initState() {
@@ -55,13 +56,61 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
 
   Future<void> _startStream() async {
     try {
-      await _streamChannel.invokeMethod<void>('start');
+      final res = await _streamChannel.invokeMethod<bool>('startStream');
+      if (mounted && (res ?? false)) {
+        setState(() {
+          _isStreaming = true;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Screen streaming started on port 8888'),
+          ),
+        );
+      }
     } on MissingPluginException {
       // The native stream implementation can be added independently.
-    } on PlatformException {
+    } on PlatformException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to start screen recording.')),
+        SnackBar(
+          content: Text('Unable to start screen recording: ${e.message ?? e.code}'),
+        ),
+      );
+    }
+  }
+
+  Future<void> _stopStream() async {
+    try {
+      await _streamChannel.invokeMethod<bool>('stop');
+      if (mounted) {
+        setState(() {
+          _isStreaming = false;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Screen streaming stopped.')),
+        );
+      }
+    } on MissingPluginException {
+      // Native plugin can be implemented independently on other platforms.
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error stopping stream: ${e.message ?? e.code}')),
+      );
+    }
+  }
+
+  Future<void> _startReceiver() async {
+    try {
+      await _streamChannel.invokeMethod<bool>('startReceiver');
+    } on MissingPluginException {
+      // The native stream implementation can be added independently.
+    } on PlatformException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Unable to start receiver: ${e.message ?? e.code}'),
+        ),
       );
     }
   }
@@ -129,14 +178,26 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
                   style: Theme.of(context).textTheme.headlineSmall,
                 ),
                 const SizedBox(height: 32),
+                if (_isStreaming) ...[
+                  FilledButton.icon(
+                    onPressed: _stopStream,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: Theme.of(context).colorScheme.error,
+                      foregroundColor: Theme.of(context).colorScheme.onError,
+                    ),
+                    icon: const Icon(Icons.stop_rounded),
+                    label: const Text('Stop Sharing'),
+                  ),
+                  const SizedBox(height: 14),
+                ],
                 FilledButton.icon(
-                  onPressed: _showSendDialog,
+                  onPressed: _isStreaming ? null : _showSendDialog,
                   icon: const Icon(Icons.upload_rounded),
                   label: const Text('Send (Host)'),
                 ),
                 const SizedBox(height: 14),
                 OutlinedButton.icon(
-                  onPressed: () {},
+                  onPressed: _startReceiver,
                   icon: const Icon(Icons.download_rounded),
                   label: const Text('Receive (Client)'),
                 ),

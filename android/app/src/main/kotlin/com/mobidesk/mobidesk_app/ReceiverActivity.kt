@@ -56,6 +56,8 @@ class ReceiverActivity : Activity() {
     private var usbHostReceiver: UsbHostReceiver? = null
     private var drainThread: Thread? = null
     private var currentSurface: Surface? = null
+    @Volatile
+    private var verifiedBulkInEndpoint: UsbEndpoint? = null
 
     @Volatile
     private var isDecoding = false
@@ -127,7 +129,11 @@ class ReceiverActivity : Activity() {
                 override fun surfaceCreated(holder: SurfaceHolder) {
                     Log.i(TAG, "Surface created, preparing USB receiver pipeline...")
                     currentSurface = holder.surface
-                    startReceiverPipeline()
+                    if (usbHostReceiver == null) {
+                        startReceiverPipeline()
+                    } else if (verifiedBulkInEndpoint != null && !isDecoding) {
+                        initMediaCodecDecoder(holder.surface)
+                    }
                 }
 
                 override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
@@ -136,9 +142,9 @@ class ReceiverActivity : Activity() {
                 }
 
                 override fun surfaceDestroyed(holder: SurfaceHolder) {
-                    Log.i(TAG, "Surface destroyed, releasing decoder and receiver...")
+                    Log.i(TAG, "Surface destroyed, releasing decoder...")
                     currentSurface = null
-                    stopReceiverPipeline()
+                    stopDecoder()
                 }
             })
         } catch (e: Exception) {
@@ -152,6 +158,15 @@ class ReceiverActivity : Activity() {
                 ).show()
                 finish()
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        Log.i(TAG, "onNewIntent received: action=${intent?.action}")
+        if (intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
+            usbHostReceiver?.triggerScan()
         }
     }
 
@@ -216,13 +231,14 @@ class ReceiverActivity : Activity() {
                 // once the Bulk IN endpoint is successfully opened and verified.
                 onBulkInReady = { inEp ->
                     Log.i(TAG, "Bulk IN endpoint verified (${inEp.address}); initializing MediaCodec decoder and binding Surface...")
+                    verifiedBulkInEndpoint = inEp
                     runOnUiThread {
                         if (isFinishing || isDestroyed) return@runOnUiThread
                         val surface = currentSurface
                         if (surface != null && surface.isValid) {
                             initMediaCodecDecoder(surface)
                         } else {
-                            Log.w(TAG, "Surface is invalid when Bulk IN endpoint was ready")
+                            Log.w(TAG, "Surface is not yet ready when Bulk IN endpoint was verified")
                         }
                     }
                 }
@@ -247,6 +263,8 @@ class ReceiverActivity : Activity() {
 
                 onDisconnected = {
                     hasReceivedFirstFrame = false
+                    verifiedBulkInEndpoint = null
+                    stopDecoder()
                     updateStatus("USB Accessory disconnected. Reconnecting...", true)
                 }
             }
@@ -309,6 +327,10 @@ class ReceiverActivity : Activity() {
      * Feeds incoming demuxed frames into MediaCodec input buffers.
      */
     private fun feedDecoder(type: Byte, flags: Byte, ptsUs: Long, payload: ByteArray) {
+        if (type == FramingProtocol.TYPE_HEARTBEAT) {
+            // Heartbeat packet, do not feed into video decoder
+            return
+        }
         val codec = mediaCodec ?: return
         if (!isDecoding) return
 
@@ -409,16 +431,9 @@ class ReceiverActivity : Activity() {
     }
 
     @Synchronized
-    private fun stopReceiverPipeline() {
-        if (!isDecoding && usbHostReceiver == null) return
+    private fun stopDecoder() {
+        if (!isDecoding && mediaCodec == null) return
         isDecoding = false
-
-        try {
-            usbHostReceiver?.stop()
-        } catch (e: Exception) {
-            Log.w(TAG, "Error stopping UsbHostReceiver: ${e.message}")
-        }
-        usbHostReceiver = null
 
         if (Thread.currentThread() !== drainThread) {
             try {
@@ -438,6 +453,19 @@ class ReceiverActivity : Activity() {
             Log.w(TAG, "Error releasing MediaCodec: ${e.message}")
         }
         mediaCodec = null
+        Log.i(TAG, "MediaCodec decoder stopped and released.")
+    }
+
+    @Synchronized
+    private fun stopReceiverPipeline() {
+        stopDecoder()
+
+        try {
+            usbHostReceiver?.stop()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error stopping UsbHostReceiver: ${e.message}")
+        }
+        usbHostReceiver = null
 
         Log.i(TAG, "Receiver pipeline stopped.")
     }

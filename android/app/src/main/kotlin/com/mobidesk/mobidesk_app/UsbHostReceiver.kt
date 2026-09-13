@@ -27,9 +27,10 @@ import kotlin.concurrent.thread
  */
 class UsbHostReceiver(
     private val context: Context,
-    private val usbManager: UsbManager? = context.getSystemService(Context.USB_SERVICE) as? UsbManager,
+    usbManager: UsbManager? = null,
     private val onFrameReceived: ((type: Byte, flags: Byte, ptsUs: Long, payload: ByteArray) -> Unit)? = null
 ) {
+    private val usbManager: UsbManager? = usbManager ?: (context.getSystemService(Context.USB_SERVICE) as? UsbManager)
     companion object {
         private const val TAG = "UsbHostReceiver"
         const val ACTION_USB_PERMISSION = "com.mobidesk.mobidesk_app.USB_PERMISSION"
@@ -166,26 +167,57 @@ class UsbHostReceiver(
             activity.startActivity(intent)
         }
 
+        private fun postToMain(action: () -> Unit) {
+            val looper = Looper.getMainLooper()
+            if (looper != null) {
+                Handler(looper).post(action)
+            } else {
+                action()
+            }
+        }
+
         /**
          * Requests explicit USB runtime permission using a PendingIntent and registers
          * a BroadcastReceiver to listen for the user's response.
+         * Returns a cancelable handle to unregister the receiver if cancelled or timed out.
          */
         fun requestUsbPermission(
             context: Context,
             usbManager: UsbManager,
             device: UsbDevice,
             callback: (Boolean) -> Unit
-        ) {
+        ): () -> Unit {
+            if (usbManager.hasPermission(device)) {
+                postToMain {
+                    callback(true)
+                }
+                return {}
+            }
+
+            val completed = java.util.concurrent.atomic.AtomicBoolean(false)
+            var isRegistered = false
+
             val receiver = object : BroadcastReceiver() {
                 override fun onReceive(recvContext: Context?, intent: Intent?) {
                     if (intent?.action == ACTION_USB_PERMISSION) {
-                        try {
-                            recvContext?.unregisterReceiver(this)
-                        } catch (_: Exception) {}
-                        val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-                        Log.i(TAG, "USB permission callback received for ${device.deviceName}, granted=$granted")
-                        Handler(Looper.getMainLooper()).post {
-                            callback(granted)
+                        @Suppress("DEPRECATION")
+                        val intentDevice: UsbDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+                        } else {
+                            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+                        }
+                        if (intentDevice != null && intentDevice.deviceName != device.deviceName) {
+                            return
+                        }
+                        if (completed.compareAndSet(false, true)) {
+                            try {
+                                recvContext?.unregisterReceiver(this)
+                            } catch (_: Exception) {}
+                            val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                            Log.i(TAG, "USB permission callback received for ${device.deviceName}, granted=$granted")
+                            postToMain {
+                                callback(granted)
+                            }
                         }
                     }
                 }
@@ -198,8 +230,13 @@ class UsbHostReceiver(
                 } else {
                     context.registerReceiver(receiver, filter)
                 }
+                isRegistered = true
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to register USB permission broadcast receiver: ${e.message}")
+                if (completed.compareAndSet(false, true)) {
+                    postToMain { callback(false) }
+                }
+                return {}
             }
 
             val pendingFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -208,9 +245,10 @@ class UsbHostReceiver(
                 PendingIntent.FLAG_UPDATE_CURRENT
             }
 
+            val requestCode = device.deviceId and 0x7FFFFFFF
             val permissionIntent = PendingIntent.getBroadcast(
                 context,
-                0,
+                requestCode,
                 Intent(ACTION_USB_PERMISSION).apply {
                     setPackage(context.packageName)
                 },
@@ -221,7 +259,24 @@ class UsbHostReceiver(
                 usbManager.requestPermission(device, permissionIntent)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to call usbManager.requestPermission: ${e.message}", e)
-                callback(false)
+                if (completed.compareAndSet(false, true)) {
+                    if (isRegistered) {
+                        try {
+                            context.unregisterReceiver(receiver)
+                        } catch (_: Exception) {}
+                    }
+                    postToMain { callback(false) }
+                }
+            }
+
+            return {
+                if (completed.compareAndSet(false, true)) {
+                    if (isRegistered) {
+                        try {
+                            context.unregisterReceiver(receiver)
+                        } catch (_: Exception) {}
+                    }
+                }
             }
         }
     }
@@ -294,11 +349,15 @@ class UsbHostReceiver(
                     onStatusChanged?.invoke("Requesting USB device permission...")
                     val permLatch = CountDownLatch(1)
                     var permissionGranted = false
-                    requestUsbPermission(context, manager, device) { granted ->
+                    val cancelPerm = requestUsbPermission(context, manager, device) { granted ->
                         permissionGranted = granted
                         permLatch.countDown()
                     }
-                    permLatch.await(15, TimeUnit.SECONDS)
+                    try {
+                        permLatch.await(15, TimeUnit.SECONDS)
+                    } finally {
+                        cancelPerm()
+                    }
                     if (!permissionGranted) {
                         onError?.invoke("USB permission denied for ${device.deviceName}")
                         Thread.sleep(RETRY_DELAY_MS)
@@ -357,7 +416,7 @@ class UsbHostReceiver(
                 try {
                     Thread.sleep(RETRY_DELAY_MS)
                 } catch (_: InterruptedException) {
-                    break
+                    if (!isRunning) break
                 }
             }
         }
@@ -380,32 +439,47 @@ class UsbHostReceiver(
             Log.i(TAG, "Device is not in AOA accessory mode. Executing background handshake 51 -> 52 -> 53...")
             onStatusChanged?.invoke("Executing AOA control handshake (51 -> 52 -> 53)...")
             var handshakeConnection: UsbDeviceConnection? = null
+            var handshakeSucceeded = false
             try {
                 handshakeConnection = manager.openDevice(currentDevice)
                 if (handshakeConnection != null) {
-                    performAoaHandshake(handshakeConnection)
+                    handshakeSucceeded = performAoaHandshake(handshakeConnection)
                 } else {
-                    Log.w(TAG, "Unable to open device for AOA handshake; trying existing endpoints directly")
+                    Log.w(TAG, "Unable to open device connection for AOA handshake")
                 }
             } catch (e: Exception) {
-                Log.w(TAG, "AOA handshake error: ${e.message}", e)
+                Log.w(TAG, "AOA handshake exception: ${e.message}", e)
             } finally {
                 try {
                     handshakeConnection?.close()
                 } catch (_: Exception) {}
             }
 
+            if (!handshakeSucceeded) {
+                throw IllegalStateException("AOA control handshake failed on ${currentDevice.deviceName}")
+            }
+
             // Wait for re-enumeration as accessory device
-            val deadline = System.currentTimeMillis() + 4000L
+            val deadline = System.currentTimeMillis() + 4500L
+            var foundAccessory = false
             while (isRunning && System.currentTimeMillis() < deadline) {
                 val list = manager.deviceList
                 val accessory = list?.values?.firstOrNull { isAccessoryDevice(it) }
                 if (accessory != null) {
                     currentDevice = accessory
+                    foundAccessory = true
                     Log.i(TAG, "Re-enumerated AOA accessory device found: ${accessory.deviceName}")
                     break
                 }
-                Thread.sleep(200)
+                try {
+                    Thread.sleep(200)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+
+            if (!foundAccessory || !isAccessoryDevice(currentDevice)) {
+                throw IllegalStateException("Device did not re-enumerate in AOA accessory mode")
             }
         }
 
@@ -413,11 +487,15 @@ class UsbHostReceiver(
         if (!manager.hasPermission(currentDevice)) {
             val permLatch = CountDownLatch(1)
             var granted = false
-            requestUsbPermission(context, manager, currentDevice) {
+            val cancelPerm = requestUsbPermission(context, manager, currentDevice) {
                 granted = it
                 permLatch.countDown()
             }
-            permLatch.await(10, TimeUnit.SECONDS)
+            try {
+                permLatch.await(10, TimeUnit.SECONDS)
+            } finally {
+                cancelPerm()
+            }
             if (!granted) {
                 throw SecurityException("USB permission denied for AOA accessory")
             }
@@ -458,64 +536,73 @@ class UsbHostReceiver(
      * Sends AOA Protocol handshake requests 51 (get protocol), 52 (send strings),
      * and 53 (start accessory).
      */
-    private fun performAoaHandshake(connection: UsbDeviceConnection) {
-        // Request 51: Get protocol version
-        val protocolBuf = ByteArray(2)
-        val protoLen = connection.controlTransfer(
-            0xC0, // USB_DIR_IN | USB_TYPE_VENDOR
-            AOA_GET_PROTOCOL,
-            0,
-            0,
-            protocolBuf,
-            2,
-            BULK_TRANSFER_TIMEOUT_MS
-        )
-        if (protoLen < 2) {
-            Log.w(TAG, "AOA get protocol returned $protoLen; device does not support AOA")
-            return
-        }
-
-        val version = (protocolBuf[1].toInt() shl 8) or (protocolBuf[0].toInt() and 0xFF)
-        Log.i(TAG, "AOA protocol version supported: $version")
-        if (version < 1) {
-            Log.w(TAG, "Unsupported AOA protocol version: $version")
-            return
-        }
-
-        // Request 52: Send identifying strings
-        val strings = arrayOf(
-            MANUFACTURER, // 0
-            MODEL,        // 1
-            DESCRIPTION,  // 2
-            VERSION,      // 3
-            URI,          // 4
-            SERIAL        // 5
-        )
-
-        for (i in strings.indices) {
-            val strBytes = (strings[i] + "\u0000").toByteArray(Charsets.UTF_8)
-            connection.controlTransfer(
-                0x40, // USB_DIR_OUT | USB_TYPE_VENDOR
-                AOA_SEND_STRING,
+    private fun performAoaHandshake(connection: UsbDeviceConnection): Boolean {
+        try {
+            // Request 51: Get protocol version
+            val protocolBuf = ByteArray(2)
+            val protoLen = connection.controlTransfer(
+                0xC0, // USB_DIR_IN | USB_TYPE_VENDOR
+                AOA_GET_PROTOCOL,
                 0,
-                i,
-                strBytes,
-                strBytes.size,
+                0,
+                protocolBuf,
+                2,
                 BULK_TRANSFER_TIMEOUT_MS
             )
-        }
+            if (protoLen < 2) {
+                Log.w(TAG, "AOA get protocol returned $protoLen; device does not support AOA")
+                return false
+            }
 
-        // Request 53: Tell device to restart in accessory mode
-        connection.controlTransfer(
-            0x40, // USB_DIR_OUT | USB_TYPE_VENDOR
-            AOA_START_ACCESSORY,
-            0,
-            0,
-            null,
-            0,
-            BULK_TRANSFER_TIMEOUT_MS
-        )
-        Log.i(TAG, "AOA start accessory request 53 completed")
+            val version = (protocolBuf[1].toInt() shl 8) or (protocolBuf[0].toInt() and 0xFF)
+            Log.i(TAG, "AOA protocol version supported: $version")
+            if (version < 1) {
+                Log.w(TAG, "Unsupported AOA protocol version: $version")
+                return false
+            }
+
+            // Request 52: Send identifying strings
+            val strings = arrayOf(
+                MANUFACTURER, // 0
+                MODEL,        // 1
+                DESCRIPTION,  // 2
+                VERSION,      // 3
+                URI,          // 4
+                SERIAL        // 5
+            )
+
+            for (i in strings.indices) {
+                val strBytes = (strings[i] + "\u0000").toByteArray(Charsets.UTF_8)
+                val sent = connection.controlTransfer(
+                    0x40, // USB_DIR_OUT | USB_TYPE_VENDOR
+                    AOA_SEND_STRING,
+                    0,
+                    i,
+                    strBytes,
+                    strBytes.size,
+                    BULK_TRANSFER_TIMEOUT_MS
+                )
+                if (sent < 0) {
+                    Log.w(TAG, "Failed sending AOA string $i: $sent")
+                }
+            }
+
+            // Request 53: Tell device to restart in accessory mode
+            val startRes = connection.controlTransfer(
+                0x40, // USB_DIR_OUT | USB_TYPE_VENDOR
+                AOA_START_ACCESSORY,
+                0,
+                0,
+                null,
+                0,
+                BULK_TRANSFER_TIMEOUT_MS
+            )
+            Log.i(TAG, "AOA start accessory request 53 completed with result $startRes")
+            return true
+        } catch (e: Exception) {
+            Log.w(TAG, "AOA handshake error: ${e.message}", e)
+            return false
+        }
     }
 
     /**
@@ -593,6 +680,13 @@ class UsbHostReceiver(
         } catch (_: InterruptedException) {}
         workerThread = null
         Log.i(TAG, "UsbHostReceiver stopped")
+    }
+
+    /**
+     * Wakes the background worker thread immediately to scan for newly connected or re-enumerated devices.
+     */
+    fun triggerScan() {
+        workerThread?.interrupt()
     }
 
     fun isConnected(): Boolean = usbConnection != null && inEndpoint != null

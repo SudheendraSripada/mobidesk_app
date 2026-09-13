@@ -11,6 +11,10 @@ class AoaHostManager(
 ) {
     private val receiver = UsbHostReceiver(context, null, onFrameReceived)
 
+    var onBulkInReady: ((android.hardware.usb.UsbEndpoint) -> Unit)?
+        get() = receiver.onBulkInReady
+        set(value) { receiver.onBulkInReady = value }
+
     var onStatusChanged: ((String) -> Unit)?
         get() = receiver.onStatusChanged
         set(value) { receiver.onStatusChanged = value }
@@ -36,7 +40,7 @@ class AoaHostManager(
     }
 
     fun scanDevices() {
-        // Handled automatically by receiver loop
+        receiver.triggerScan()
     }
 
     fun requestKeyframeFromSender() {

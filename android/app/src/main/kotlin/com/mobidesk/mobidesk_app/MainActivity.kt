@@ -60,9 +60,9 @@ class MainActivity : FlutterActivity() {
                 }
                 "getUsbStatus" -> {
                     try {
-                        val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
-                        val hasAccessory = !usbManager.accessoryList.isNullOrEmpty()
-                        val deviceCount = usbManager.deviceList.size
+                        val usbManager = getSystemService(Context.USB_SERVICE) as? UsbManager
+                        val hasAccessory = usbManager?.accessoryList?.isNotEmpty() == true
+                        val deviceCount = usbManager?.deviceList?.size ?: 0
                         val status = mapOf(
                             "hasAccessory" to hasAccessory,
                             "deviceCount" to deviceCount,

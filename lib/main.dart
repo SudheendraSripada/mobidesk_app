@@ -1,4 +1,3 @@
-import 'package:android_intent_plus/android_intent.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -13,8 +12,19 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'MobiDesk',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.indigo),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.indigo,
+          brightness: Brightness.light,
+        ),
+        useMaterial3: true,
+      ),
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.indigo,
+          brightness: Brightness.dark,
+        ),
         useMaterial3: true,
       ),
       home: const MyHomePage(),
@@ -31,13 +41,16 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
   static const _streamChannel = MethodChannel('com.mobidesk/stream');
-  bool _shouldStartStreamOnResume = false;
+
   bool _isStreaming = false;
+  bool _isLoading = false;
+  String _statusMessage = 'Ready for USB AOA connection';
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _refreshStatus();
   }
 
   @override
@@ -48,55 +61,106 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && _shouldStartStreamOnResume) {
-      _shouldStartStreamOnResume = false;
-      _startStream();
+    if (state == AppLifecycleState.resumed) {
+      _refreshStatus();
     }
   }
 
+  Future<void> _refreshStatus() async {
+    try {
+      final streaming = await _streamChannel.invokeMethod<bool>('isStreaming');
+      if (mounted && streaming != null) {
+        setState(() {
+          _isStreaming = streaming;
+          if (_isStreaming) {
+            _statusMessage = 'Screen streaming active over USB Accessory';
+          }
+        });
+      }
+
+      final usbStatus =
+          await _streamChannel.invokeMapMethod<String, dynamic>('getUsbStatus');
+      if (mounted && usbStatus != null) {
+        final hasAccessory = usbStatus['hasAccessory'] as bool? ?? false;
+        final deviceCount = usbStatus['deviceCount'] as int? ?? 0;
+        setState(() {
+          if (_isStreaming) {
+            _statusMessage = 'Screen streaming active over USB Accessory';
+          } else if (hasAccessory) {
+            _statusMessage = 'USB Accessory attached to Host';
+          } else if (deviceCount > 0) {
+            _statusMessage = '$deviceCount USB device(s) detected';
+          } else {
+            _statusMessage = 'Ready for USB AOA connection';
+          }
+        });
+      }
+    } on MissingPluginException {
+      // Platform channels only execute on native Android devices
+    } catch (_) {}
+  }
+
   Future<void> _startStream() async {
+    setState(() => _isLoading = true);
     try {
       final res = await _streamChannel.invokeMethod<bool>('startStream');
       if (mounted && (res ?? false)) {
         setState(() {
           _isStreaming = true;
+          _statusMessage = 'Screen streaming active over USB Accessory';
         });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Screen streaming started on port 8888'),
+            content: Text('Screen capture started over USB AOA 2.0'),
+            backgroundColor: Colors.green,
           ),
         );
       }
     } on MissingPluginException {
-      // The native stream implementation can be added independently.
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('USB stream plugin is only supported on Android'),
+        ),
+      );
     } on PlatformException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Unable to start screen recording: ${e.message ?? e.code}'),
+          backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   Future<void> _stopStream() async {
+    setState(() => _isLoading = true);
     try {
       await _streamChannel.invokeMethod<bool>('stop');
       if (mounted) {
         setState(() {
           _isStreaming = false;
+          _statusMessage = 'Screen streaming stopped';
         });
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Screen streaming stopped.')),
         );
       }
     } on MissingPluginException {
-      // Native plugin can be implemented independently on other platforms.
+      // Platform plugin executed on native Android
     } on PlatformException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error stopping stream: ${e.message ?? e.code}')),
+        SnackBar(
+          content: Text('Error stopping stream: ${e.message ?? e.code}'),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
       );
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -104,49 +168,58 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
     try {
       await _streamChannel.invokeMethod<bool>('startReceiver');
     } on MissingPluginException {
-      // The native stream implementation can be added independently.
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('USB receiver plugin is only supported on Android'),
+        ),
+      );
     } on PlatformException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Unable to start receiver: ${e.message ?? e.code}'),
+          backgroundColor: Theme.of(context).colorScheme.error,
         ),
       );
     }
   }
 
-  Future<void> _showSendDialog() async {
-    await showDialog<void>(
+  void _showUsbGuide() {
+    showDialog<void>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('USB tethering required'),
-        content: const Text('Turn on USB tethering to send the video output'),
+      builder: (ctx) => AlertDialog(
+        title: const Row(
+          children: [
+            Icon(Icons.usb_rounded, color: Colors.indigo),
+            SizedBox(width: 8),
+            Text('USB AOA 2.0 Setup'),
+          ],
+        ),
+        content: const SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Direct High-Speed USB Connection',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              SizedBox(height: 8),
+              Text(
+                '1. Connect a USB OTG adapter into Phone B (Receiver / Dock).\n'
+                '2. Plug a standard USB cable between the OTG adapter and Phone A (Sender).\n'
+                '3. On Phone B, tap "Receive (Receiver)".\n'
+                '4. On Phone A, tap "Send (Sender)" and grant screen capture permission.\n\n'
+                'Video will stream seamlessly via USB Bulk Transfer with low latency!',
+              ),
+            ],
+          ),
+        ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton.icon(
-            onPressed: () async {
-              Navigator.of(dialogContext).pop();
-              _shouldStartStreamOnResume = true;
-              const intent = AndroidIntent(
-                action: 'android.settings.TETHER_SETTINGS',
-              );
-              try {
-                await intent.launch();
-              } on PlatformException {
-                _shouldStartStreamOnResume = false;
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Unable to open tethering settings.'),
-                  ),
-                );
-              }
-            },
-            icon: const Icon(Icons.settings_outlined),
-            label: const Text('Open Settings'),
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Got it'),
           ),
         ],
       ),
@@ -155,51 +228,225 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
     return Scaffold(
-      appBar: AppBar(title: const Text('MobiDesk')),
+      appBar: AppBar(
+        title: const Text('MobiDesk'),
+        centerTitle: true,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.help_outline_rounded),
+            tooltip: 'USB Connection Guide',
+            onPressed: _showUsbGuide,
+          ),
+        ],
+      ),
       body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 420),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
+                // Header Icon and Title
                 Icon(
-                  Icons.devices_other,
-                  size: 64,
-                  color: Theme.of(context).colorScheme.primary,
+                  Icons.usb_rounded,
+                  size: 48,
+                  color: colorScheme.primary,
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(height: 8),
                 Text(
-                  'Share your screen',
+                  'USB AOA Screen Streamer',
                   textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.headlineSmall,
-                ),
-                const SizedBox(height: 32),
-                if (_isStreaming) ...[
-                  FilledButton.icon(
-                    onPressed: _stopStream,
-                    style: FilledButton.styleFrom(
-                      backgroundColor: Theme.of(context).colorScheme.error,
-                      foregroundColor: Theme.of(context).colorScheme.onError,
-                    ),
-                    icon: const Icon(Icons.stop_rounded),
-                    label: const Text('Stop Sharing'),
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.bold,
                   ),
-                  const SizedBox(height: 14),
-                ],
-                FilledButton.icon(
-                  onPressed: _isStreaming ? null : _showSendDialog,
-                  icon: const Icon(Icons.upload_rounded),
-                  label: const Text('Send (Host)'),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Ultra low-latency USB Bulk Transfer',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Live Status Card
+                Card(
+                  elevation: 0,
+                  color: _isStreaming
+                      ? colorScheme.primaryContainer
+                      : colorScheme.surfaceContainerHighest,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                    child: Row(
+                      children: [
+                        Icon(
+                          _isStreaming
+                              ? Icons.sensors_rounded
+                              : Icons.info_outline_rounded,
+                          size: 20,
+                          color: _isStreaming
+                              ? colorScheme.onPrimaryContainer
+                              : colorScheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _isStreaming ? 'Streaming Live' : 'Status',
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  color: _isStreaming
+                                      ? colorScheme.onPrimaryContainer
+                                      : colorScheme.onSurfaceVariant,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              Text(
+                                _statusMessage,
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: _isStreaming
+                                      ? colorScheme.onPrimaryContainer
+                                      : colorScheme.onSurfaceVariant,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (_isLoading)
+                          const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 14),
-                OutlinedButton.icon(
-                  onPressed: _startReceiver,
-                  icon: const Icon(Icons.download_rounded),
-                  label: const Text('Receive (Client)'),
+
+                // Sender Card (Phone A)
+                Card(
+                  elevation: 1,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.upload_rounded, color: colorScheme.primary, size: 20),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Phone A (Sender)',
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Acts as USB Accessory to capture and stream display.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        if (_isStreaming) ...[
+                          FilledButton.icon(
+                            onPressed: _isLoading ? null : _stopStream,
+                            style: FilledButton.styleFrom(
+                              backgroundColor: colorScheme.error,
+                              foregroundColor: colorScheme.onError,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                            icon: const Icon(Icons.stop_rounded),
+                            label: const Text('Stop Sharing'),
+                          ),
+                        ] else ...[
+                          FilledButton.icon(
+                            onPressed: _isLoading ? null : _startStream,
+                            style: FilledButton.styleFrom(
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                            icon: const Icon(Icons.screen_share_rounded),
+                            label: const Text('Send (Sender)'),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // Receiver Card (Phone B)
+                Card(
+                  elevation: 1,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.download_rounded, color: colorScheme.secondary, size: 20),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Phone B (Receiver / Dock)',
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'Acts as USB Host via OTG to decode and display video.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        OutlinedButton.icon(
+                          onPressed: _isLoading ? null : _startReceiver,
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                          ),
+                          icon: const Icon(Icons.tv_rounded),
+                          label: const Text('Receive (Receiver)'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // Quick Connection Help link
+                TextButton.icon(
+                  onPressed: _showUsbGuide,
+                  icon: const Icon(Icons.cable_rounded, size: 16),
+                  label: const Text('How to connect with USB OTG cable'),
                 ),
               ],
             ),

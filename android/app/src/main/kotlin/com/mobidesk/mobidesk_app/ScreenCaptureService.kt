@@ -19,20 +19,19 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.util.Log
 import android.view.Surface
 import java.nio.ByteBuffer
 import kotlin.concurrent.thread
 
 /**
- * Android Foreground Service managing the MediaProjection session,
- * VirtualDisplay, hardware H.264 (video/avc) MediaCodec video encoder,
- * and TCP socket streaming via StreamServer on port 8888.
- *
- * Fully conforms with Android 14 (API 34) requirements:
- * 1. Prompts for user consent per session in MainActivity.
- * 2. Invokes startForeground with FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION before acquiring MediaProjection.
- * 3. Registers mandatory MediaProjection.Callback prior to creating VirtualDisplay.
+ * Android Foreground Service managing Phone A (Sender):
+ * - Maintains a persistent Partial WakeLock to prevent CPU throttling during continuous streaming.
+ * - Manages MediaProjection session conforming to Android 14 requirements.
+ * - Encodes screen frames using hardware MediaCodec (video/avc H.264 Annex-B NAL units, low-latency CBR).
+ * - Packets data with binary framing header (Magic 0x4D42, type, payload length, PTS).
+ * - Streams binary frames over UsbAccessory FileOutputStream via AoaAccessoryManager.
  */
 class ScreenCaptureService : Service() {
 
@@ -46,12 +45,10 @@ class ScreenCaptureService : Service() {
         const val EXTRA_WIDTH = "extra_width"
         const val EXTRA_HEIGHT = "extra_height"
         const val EXTRA_DPI = "extra_dpi"
-        const val EXTRA_PORT = "extra_port"
 
         private const val NOTIFICATION_CHANNEL_ID = "mobidesk_screen_capture"
         private const val NOTIFICATION_ID = 1001
 
-        const val DEFAULT_PORT = 8888
         const val DEFAULT_WIDTH = 720
         const val DEFAULT_HEIGHT = 1280
         const val DEFAULT_FRAME_RATE = 30
@@ -64,19 +61,19 @@ class ScreenCaptureService : Service() {
             private set
     }
 
+    private var wakeLock: PowerManager.WakeLock? = null
     private var mediaProjection: MediaProjection? = null
     private var projectionCallback: MediaProjection.Callback? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var mediaCodec: MediaCodec? = null
     private var inputSurface: Surface? = null
-    private var streamServer: StreamServer? = null
+    private var aoaAccessoryManager: AoaAccessoryManager? = null
 
     @Volatile
     private var isStreaming = false
     @Volatile
     private var isStopping = false
     private var drainThread: Thread? = null
-    private var serverPort = DEFAULT_PORT
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -96,14 +93,14 @@ class ScreenCaptureService : Service() {
 
     private fun handleStart(intent: Intent) {
         if (isStreaming) {
-            Log.w(TAG, "Screen capture service already active.")
+            Log.w(TAG, "ScreenCaptureService already active.")
             return
         }
 
-        val port = intent.getIntExtra(EXTRA_PORT, DEFAULT_PORT)
-        serverPort = port
+        // 1. Acquire WakeLock for persistent continuous streaming
+        acquireWakeLock()
 
-        // 1. Android 14 requirement: Start foreground service with MEDIA_PROJECTION type BEFORE getMediaProjection
+        // 2. Android 14 requirement: Start foreground service with MEDIA_PROJECTION type BEFORE getMediaProjection
         startForegroundWithNotification()
 
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
@@ -120,12 +117,12 @@ class ScreenCaptureService : Service() {
             return
         }
 
-        // 2. Obtain MediaProjection token
+        // 3. Obtain MediaProjection token
         val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         val projection = try {
             projectionManager.getMediaProjection(resultCode, dataIntent)
         } catch (e: Exception) {
-            Log.e(TAG, "SecurityException or error obtaining MediaProjection: ${e.message}", e)
+            Log.e(TAG, "Error obtaining MediaProjection: ${e.message}", e)
             null
         }
 
@@ -136,7 +133,7 @@ class ScreenCaptureService : Service() {
         }
         mediaProjection = projection
 
-        // 3. Android 14 requirement: Register MediaProjection callback before createVirtualDisplay
+        // 4. Android 14 requirement: Register MediaProjection callback before createVirtualDisplay
         val callback = object : MediaProjection.Callback() {
             override fun onStop() {
                 super.onStop()
@@ -147,7 +144,7 @@ class ScreenCaptureService : Service() {
         projectionCallback = callback
         projection.registerCallback(callback, Handler(Looper.getMainLooper()))
 
-        // 4. Determine display dimensions preserving aspect ratio (720p resolution, 30 FPS)
+        // 5. Determine display dimensions preserving aspect ratio (720p resolution, 30 FPS)
         val displayMetrics = resources.displayMetrics
         var width = intent.getIntExtra(EXTRA_WIDTH, 0)
         var height = intent.getIntExtra(EXTRA_HEIGHT, 0)
@@ -175,16 +172,24 @@ class ScreenCaptureService : Service() {
         if (width % 2 != 0) width--
         if (height % 2 != 0) height--
 
-        // 5. Start TCP Socket Streaming Server on port 8888
-        val server = StreamServer(port)
-        // Request keyframe as soon as a new client connects so it can start decoding instantly
-        server.onClientConnected = {
-            requestSyncFrame()
+        // 6. Initialize AoaAccessoryManager for USB Open Accessory bulk transfer
+        val accessoryMgr = AoaAccessoryManager(this).apply {
+            onAccessoryConnected = {
+                Log.i(TAG, "USB Accessory connected to Host. Requesting keyframe...")
+                requestSyncFrame()
+            }
+            onAccessoryDisconnected = {
+                Log.i(TAG, "USB Accessory disconnected from Host.")
+            }
+            onKeyframeRequested = {
+                Log.i(TAG, "Host requested keyframe via AOA channel.")
+                requestSyncFrame()
+            }
         }
-        server.start()
-        streamServer = server
+        accessoryMgr.start()
+        aoaAccessoryManager = accessoryMgr
 
-        // 6. Initialize MediaCodec video encoder for MIME type video/avc (H.264) at 30 FPS
+        // 7. Initialize MediaCodec video encoder for MIME type video/avc (H.264) with low-latency CBR
         try {
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
                 setInteger(
@@ -194,14 +199,30 @@ class ScreenCaptureService : Service() {
                 setInteger(MediaFormat.KEY_BIT_RATE, DEFAULT_BIT_RATE)
                 setInteger(MediaFormat.KEY_FRAME_RATE, DEFAULT_FRAME_RATE)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, DEFAULT_I_FRAME_INTERVAL)
-                // Use standard VBR for broad hardware compatibility across all Android chipsets
-                setInteger(
-                    MediaFormat.KEY_BITRATE_MODE,
-                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
-                )
+
+                // Low-latency Constant Bit Rate (CBR)
+                try {
+                    setInteger(
+                        MediaFormat.KEY_BITRATE_MODE,
+                        MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "CBR mode not supported, falling back to VBR: ${e.message}")
+                    setInteger(
+                        MediaFormat.KEY_BITRATE_MODE,
+                        MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+                    )
+                }
+
                 // Realtime low-latency priority
                 setInteger(MediaFormat.KEY_PRIORITY, 0)
-                // Repeat previous frame on static screen so encoder outputs continuous frames
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    try {
+                        setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                    } catch (_: Exception) {}
+                }
+
+                // Repeat previous frame on static screen for continuous smooth output
                 setLong(
                     MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER,
                     1_000_000L / DEFAULT_FRAME_RATE
@@ -222,7 +243,7 @@ class ScreenCaptureService : Service() {
                 return
             }
 
-            // 7. Create VirtualDisplay directing screen frames to MediaCodec input surface
+            // 8. Create VirtualDisplay directing screen frames to MediaCodec input surface
             virtualDisplay = projection.createVirtualDisplay(
                 "MobiDeskCapture",
                 width,
@@ -236,14 +257,14 @@ class ScreenCaptureService : Service() {
 
             isStreaming = true
             isServiceRunning = true
-            Log.i(TAG, "MediaCodec encoder initialized (${width}x${height} @ ${DEFAULT_FRAME_RATE} FPS, port $port)")
+            Log.i(TAG, "MediaCodec CBR encoder initialized (${width}x${height} @ ${DEFAULT_FRAME_RATE} FPS)")
 
-            // 8. In a background thread, read the encoded H.264 byte buffers (NAL units) from MediaCodec
+            // 9. In background thread, drain encoded NAL units and stream with binary framing header
             drainThread = thread(name = "ScreenCaptureDrainThread") {
                 drainCodec()
             }
 
-            Log.i(TAG, "Screen capture and streaming successfully started.")
+            Log.i(TAG, "Screen capture service successfully started and streaming over AOA.")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize MediaCodec or VirtualDisplay: ${e.message}", e)
             handleStop()
@@ -265,6 +286,10 @@ class ScreenCaptureService : Service() {
         }
     }
 
+    /**
+     * Reads encoded H.264 Annex-B NAL units, applies binary framing header,
+     * and streams directly over UsbAccessory FileOutputStream.
+     */
     private fun drainCodec() {
         val codec = mediaCodec ?: return
         val bufferInfo = MediaCodec.BufferInfo()
@@ -282,10 +307,21 @@ class ScreenCaptureService : Service() {
                         outputBuffer.get(packet)
 
                         val isConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+                        val isKeyframe = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+
                         if (isConfig) {
-                            streamServer?.sendConfig(packet)
+                            // SPS / PPS configuration frame
+                            aoaAccessoryManager?.sendConfig(packet)
                         } else {
-                            streamServer?.sendPacket(packet)
+                            val flags = if (isKeyframe) FramingProtocol.FLAG_KEYFRAME else FramingProtocol.FLAG_NONE
+                            aoaAccessoryManager?.sendFrame(
+                                FramingProtocol.TYPE_FRAME,
+                                flags,
+                                bufferInfo.presentationTimeUs,
+                                packet,
+                                0,
+                                packet.size
+                            )
                         }
                     }
 
@@ -305,22 +341,49 @@ class ScreenCaptureService : Service() {
                         val spsLen = csd0.remaining()
                         csd0.get(spsPps, 0, spsLen)
                         csd1.get(spsPps, spsLen, csd1.remaining())
-                        streamServer?.sendConfig(spsPps)
+                        aoaAccessoryManager?.sendConfig(spsPps)
                     }
                 }
             } catch (e: Exception) {
                 if (isStreaming) {
-                    Log.e(TAG, "Error while draining MediaCodec: ${e.message}")
+                    Log.e(TAG, "Error draining MediaCodec: ${e.message}")
                 }
                 break
             }
         }
 
-        // If drainage loop terminated unexpectedly, ensure the service shuts down cleanly
         if (isStreaming) {
             Log.e(TAG, "Drainage thread terminated unexpectedly, stopping service.")
             handleStop()
         }
+    }
+
+    private fun acquireWakeLock() {
+        if (wakeLock == null) {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "MobiDesk:ScreenCaptureServiceWakeLock"
+            ).apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+            Log.i(TAG, "WakeLock acquired for continuous streaming.")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                    Log.i(TAG, "WakeLock released.")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing WakeLock: ${e.message}")
+        }
+        wakeLock = null
     }
 
     @Synchronized
@@ -328,7 +391,7 @@ class ScreenCaptureService : Service() {
         if (isStopping) return
         isStopping = true
 
-        Log.i(TAG, "Stopping screen capture and streaming service...")
+        Log.i(TAG, "Stopping ScreenCaptureService...")
         isStreaming = false
         isServiceRunning = false
 
@@ -364,13 +427,12 @@ class ScreenCaptureService : Service() {
         inputSurface = null
 
         try {
-            streamServer?.stop()
+            aoaAccessoryManager?.stop()
         } catch (e: Exception) {
-            Log.w(TAG, "Error stopping streamServer: ${e.message}")
+            Log.w(TAG, "Error stopping aoaAccessoryManager: ${e.message}")
         }
-        streamServer = null
+        aoaAccessoryManager = null
 
-        // Unregister callback before calling stop to prevent recursive callback invocation
         projectionCallback?.let {
             try {
                 mediaProjection?.unregisterCallback(it)
@@ -387,6 +449,8 @@ class ScreenCaptureService : Service() {
         }
         mediaProjection = null
 
+        releaseWakeLock()
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
@@ -396,7 +460,7 @@ class ScreenCaptureService : Service() {
 
         stopSelf()
         isStopping = false
-        Log.i(TAG, "Screen capture service stopped.")
+        Log.i(TAG, "ScreenCaptureService stopped successfully.")
     }
 
     private fun startForegroundWithNotification() {
@@ -414,7 +478,7 @@ class ScreenCaptureService : Service() {
 
     private fun createNotification(): Notification {
         val title = "MobiDesk Screen Streaming"
-        val message = "Sharing screen over local network on port $serverPort"
+        val message = "Streaming screen over USB Android Open Accessory (AOA 2.0)"
         val iconRes = if (applicationInfo.icon != 0) applicationInfo.icon else android.R.drawable.ic_menu_camera
 
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

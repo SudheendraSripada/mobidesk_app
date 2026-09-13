@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Google USB Accessory VID is 0x18D1 (decimal 6353) -->
+    <usb-device vendor-id="6353" />
+</resources>

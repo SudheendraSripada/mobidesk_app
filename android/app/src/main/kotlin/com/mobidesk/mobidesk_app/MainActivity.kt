@@ -3,6 +3,7 @@ package com.mobidesk.mobidesk_app
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.hardware.usb.UsbManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import io.flutter.embedding.android.FlutterActivity
@@ -55,16 +56,26 @@ class MainActivity : FlutterActivity() {
                 }
                 "startReceiver" -> {
                     try {
-                        val host = call.argument<String>("host") ?: StreamClient.DEFAULT_HOST
-                        val port = call.argument<Int>("port") ?: StreamClient.DEFAULT_PORT
-                        val intent = Intent(this, ReceiverActivity::class.java).apply {
-                            putExtra(ReceiverActivity.EXTRA_HOST, host)
-                            putExtra(ReceiverActivity.EXTRA_PORT, port)
-                        }
+                        val intent = Intent(this, ReceiverActivity::class.java)
                         startActivity(intent)
                         result.success(true)
                     } catch (e: Exception) {
                         result.error("RECEIVER_START_FAILED", "Failed to start ReceiverActivity: ${e.message}", null)
+                    }
+                }
+                "getUsbStatus" -> {
+                    try {
+                        val usbManager = getSystemService(Context.USB_SERVICE) as UsbManager
+                        val hasAccessory = !usbManager.accessoryList.isNullOrEmpty()
+                        val deviceCount = usbManager.deviceList.size
+                        val status = mapOf(
+                            "hasAccessory" to hasAccessory,
+                            "deviceCount" to deviceCount,
+                            "isStreaming" to ScreenCaptureService.isServiceRunning
+                        )
+                        result.success(status)
+                    } catch (e: Exception) {
+                        result.error("USB_STATUS_ERROR", "Failed to get USB status: ${e.message}", null)
                     }
                 }
                 else -> {
@@ -87,7 +98,7 @@ class MainActivity : FlutterActivity() {
                 val isPortrait = screenH >= screenW
 
                 // Target 720p while preserving device screen aspect ratio
-                val targetShort = 720
+                val targetShort = ScreenCaptureService.DEFAULT_WIDTH
                 val minDim = minOf(screenW, screenH)
                 val maxDim = maxOf(screenW, screenH)
                 val targetLong = if (minDim > 0) {
@@ -95,7 +106,7 @@ class MainActivity : FlutterActivity() {
                         if (it % 2 != 0) it - 1 else it
                     }
                 } else {
-                    1280
+                    ScreenCaptureService.DEFAULT_HEIGHT
                 }
 
                 val width = if (isPortrait) targetShort else targetLong
@@ -108,7 +119,6 @@ class MainActivity : FlutterActivity() {
                     putExtra(ScreenCaptureService.EXTRA_WIDTH, width)
                     putExtra(ScreenCaptureService.EXTRA_HEIGHT, height)
                     putExtra(ScreenCaptureService.EXTRA_DPI, metrics.densityDpi)
-                    putExtra(ScreenCaptureService.EXTRA_PORT, StreamServer.DEFAULT_PORT)
                 }
 
                 try {

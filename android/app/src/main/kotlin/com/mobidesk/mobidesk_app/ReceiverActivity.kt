@@ -1,7 +1,9 @@
 package com.mobidesk.mobidesk_app
 
 import android.app.Activity
+import android.content.Intent
 import android.graphics.Color
+import android.hardware.usb.UsbManager
 import android.media.MediaCodec
 import android.media.MediaFormat
 import android.os.Build
@@ -130,6 +132,15 @@ class ReceiverActivity : Activity() {
         })
     }
 
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        Log.i(TAG, "onNewIntent received: action=${intent?.action}")
+        if (intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
+            aoaHostManager?.scanDevices()
+        }
+    }
+
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) {
@@ -246,7 +257,16 @@ class ReceiverActivity : Activity() {
         if (!isDecoding) return
 
         try {
-            val inputBufferIndex = codec.dequeueInputBuffer(TIMEOUT_USEC)
+            var inputBufferIndex = -1
+            val maxRetries = if (type == FramingProtocol.TYPE_CONFIG) 10 else 3
+            var attempt = 0
+            while (isDecoding && inputBufferIndex < 0 && attempt < maxRetries) {
+                inputBufferIndex = codec.dequeueInputBuffer(TIMEOUT_USEC)
+                if (inputBufferIndex < 0) {
+                    attempt++
+                }
+            }
+
             if (inputBufferIndex >= 0) {
                 val inputBuffer = codec.getInputBuffer(inputBufferIndex) ?: return
                 inputBuffer.clear()
@@ -292,6 +312,13 @@ class ReceiverActivity : Activity() {
                 } else if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     val newFormat = codec.outputFormat
                     Log.i(TAG, "Decoder output format changed: $newFormat")
+                    val videoWidth = if (newFormat.containsKey(MediaFormat.KEY_WIDTH)) newFormat.getInteger(MediaFormat.KEY_WIDTH) else 0
+                    val videoHeight = if (newFormat.containsKey(MediaFormat.KEY_HEIGHT)) newFormat.getInteger(MediaFormat.KEY_HEIGHT) else 0
+                    if (videoWidth > 0 && videoHeight > 0) {
+                        runOnUiThread {
+                            adjustSurfaceAspectRatio(videoWidth, videoHeight)
+                        }
+                    }
                 }
             } catch (e: Exception) {
                 if (isDecoding) {
@@ -299,6 +326,31 @@ class ReceiverActivity : Activity() {
                 }
                 break
             }
+        }
+    }
+
+    private fun adjustSurfaceAspectRatio(videoWidth: Int, videoHeight: Int) {
+        try {
+            surfaceView.holder.setFixedSize(videoWidth, videoHeight)
+            val rootW = rootLayout.width
+            val rootH = rootLayout.height
+            if (rootW > 0 && rootH > 0) {
+                val videoRatio = videoWidth.toDouble() / videoHeight
+                val screenRatio = rootW.toDouble() / rootH
+
+                val lp = surfaceView.layoutParams as FrameLayout.LayoutParams
+                if (videoRatio > screenRatio) {
+                    lp.width = rootW
+                    lp.height = (rootW / videoRatio).toInt()
+                } else {
+                    lp.height = rootH
+                    lp.width = (rootH * videoRatio).toInt()
+                }
+                lp.gravity = Gravity.CENTER
+                surfaceView.layoutParams = lp
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error adjusting aspect ratio: ${e.message}")
         }
     }
 

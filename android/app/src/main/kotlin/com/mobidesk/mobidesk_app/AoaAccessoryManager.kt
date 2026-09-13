@@ -103,7 +103,7 @@ class AoaAccessoryManager(private val context: Context) {
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            context.registerReceiver(usbReceiver, filter, Context.RECEIVER_EXPORTED)
         } else {
             context.registerReceiver(usbReceiver, filter)
         }
@@ -135,7 +135,7 @@ class AoaAccessoryManager(private val context: Context) {
             val permissionIntent = PendingIntent.getBroadcast(
                 context,
                 0,
-                Intent(ACTION_USB_PERMISSION),
+                Intent(ACTION_USB_PERMISSION).setPackage(context.packageName),
                 flag
             )
             usbManager.requestPermission(accessory, permissionIntent)
@@ -202,7 +202,7 @@ class AoaAccessoryManager(private val context: Context) {
             try {
                 val read = inStream.read(buffer)
                 if (read == -1) break
-                if (read >= FramingProtocol.HEADER_SIZE) {
+                if (read >= 3) {
                     // Check if host sent a heartbeat or request
                     if (buffer[0] == FramingProtocol.MAGIC_0 && buffer[1] == FramingProtocol.MAGIC_1) {
                         val type = buffer[2]

@@ -142,7 +142,7 @@ class AoaHostManager(
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            context.registerReceiver(usbReceiver, filter, Context.RECEIVER_EXPORTED)
         } else {
             context.registerReceiver(usbReceiver, filter)
         }
@@ -172,8 +172,12 @@ class AoaHostManager(
             }
         }
 
-        // Priority 2: Check any connected USB device to initiate AOA handshake
+        // Priority 2: Check any connected non-hub USB device to initiate AOA handshake
         for (device in deviceList.values) {
+            if (device.deviceClass == UsbConstants.USB_CLASS_HUB) {
+                Log.d(TAG, "Skipping USB Hub device: ${device.deviceName}")
+                continue
+            }
             Log.i(TAG, "Found candidate USB device: ${device.deviceName} (VID=0x${Integer.toHexString(device.vendorId)})")
             handleDevice(device)
             return
@@ -203,7 +207,7 @@ class AoaHostManager(
         val permissionIntent = PendingIntent.getBroadcast(
             context,
             0,
-            Intent(ACTION_USB_HOST_PERMISSION),
+            Intent(ACTION_USB_HOST_PERMISSION).setPackage(context.packageName),
             flag
         )
         usbManager.requestPermission(device, permissionIntent)
@@ -342,21 +346,27 @@ class AoaHostManager(
         var outEp: UsbEndpoint? = null
         var targetInterface: UsbInterface? = null
 
-        // Locate Bulk IN and Bulk OUT endpoints
+        // Locate interface with Bulk IN and Bulk OUT endpoints
         for (i in 0 until device.interfaceCount) {
             val iface = device.getInterface(i)
+            var foundIn: UsbEndpoint? = null
+            var foundOut: UsbEndpoint? = null
             for (j in 0 until iface.endpointCount) {
                 val ep = iface.getEndpoint(j)
                 if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
-                    if (ep.direction == UsbConstants.USB_DIR_IN && inEp == null) {
-                        inEp = ep
-                        targetInterface = iface
-                    } else if (ep.direction == UsbConstants.USB_DIR_OUT && outEp == null) {
-                        outEp = ep
+                    if (ep.direction == UsbConstants.USB_DIR_IN && foundIn == null) {
+                        foundIn = ep
+                    } else if (ep.direction == UsbConstants.USB_DIR_OUT && foundOut == null) {
+                        foundOut = ep
                     }
                 }
             }
-            if (inEp != null) break
+            if (foundIn != null) {
+                inEp = foundIn
+                outEp = foundOut
+                targetInterface = iface
+                break
+            }
         }
 
         if (inEp == null || targetInterface == null) {

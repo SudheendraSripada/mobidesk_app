@@ -337,10 +337,11 @@ class ScreenCaptureService : Service() {
                     val csd0 = newFormat.getByteBuffer("csd-0")?.duplicate()
                     val csd1 = newFormat.getByteBuffer("csd-1")?.duplicate()
                     if (csd0 != null && csd1 != null) {
-                        val spsPps = ByteArray(csd0.remaining() + csd1.remaining())
-                        val spsLen = csd0.remaining()
-                        csd0.get(spsPps, 0, spsLen)
-                        csd1.get(spsPps, spsLen, csd1.remaining())
+                        val spsBytes = extractAnnexBNal(csd0)
+                        val ppsBytes = extractAnnexBNal(csd1)
+                        val spsPps = ByteArray(spsBytes.size + ppsBytes.size)
+                        System.arraycopy(spsBytes, 0, spsPps, 0, spsBytes.size)
+                        System.arraycopy(ppsBytes, 0, spsPps, spsBytes.size, ppsBytes.size)
                         aoaAccessoryManager?.sendConfig(spsPps)
                     }
                 }
@@ -355,6 +356,30 @@ class ScreenCaptureService : Service() {
         if (isStreaming) {
             Log.e(TAG, "Drainage thread terminated unexpectedly, stopping service.")
             handleStop()
+        }
+    }
+
+    private fun extractAnnexBNal(buffer: ByteBuffer): ByteArray {
+        val size = buffer.remaining()
+        val pos = buffer.position()
+        val hasStartCode = size >= 4 &&
+            buffer.get(pos) == 0.toByte() &&
+            buffer.get(pos + 1) == 0.toByte() &&
+            ((buffer.get(pos + 2) == 1.toByte()) ||
+             (buffer.get(pos + 2) == 0.toByte() && buffer.get(pos + 3) == 1.toByte()))
+
+        return if (hasStartCode) {
+            val bytes = ByteArray(size)
+            buffer.get(bytes)
+            bytes
+        } else {
+            val bytes = ByteArray(size + 4)
+            bytes[0] = 0
+            bytes[1] = 0
+            bytes[2] = 0
+            bytes[3] = 1
+            buffer.get(bytes, 4, size)
+            bytes
         }
     }
 

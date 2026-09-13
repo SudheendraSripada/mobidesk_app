@@ -296,4 +296,18 @@ class UsbHostReceiverTest {
         assertEquals("extra_host", ReceiverActivity.EXTRA_HOST)
         assertEquals("extra_port", ReceiverActivity.EXTRA_PORT)
     }
+
+    @Test
+    fun testReceiverActivityApplyFullScreenDefensive() {
+        val activity = ReceiverActivity()
+        // Must not throw NullPointerException or any exception when window/decorView is uninitialized
+        activity.applyFullScreen()
+    }
+
+    @Test
+    fun testReceiverActivityAdjustSurfaceAspectRatioGuards() {
+        val activity = ReceiverActivity()
+        // Must not throw UninitializedPropertyAccessException or any exception when views are uninitialized
+        activity.adjustSurfaceAspectRatio(720, 1280)
+    }
 }

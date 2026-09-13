@@ -68,7 +68,7 @@ class ReceiverActivity : Activity() {
         super.onCreate(savedInstanceState)
         try {
             // Keep screen awake while receiver is active
-            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
             // Create UI layout programmatically: SurfaceView with a status overlay on top
             rootLayout = FrameLayout(this).apply {
@@ -124,6 +124,9 @@ class ReceiverActivity : Activity() {
 
             // Enter native immersive full-screen mode (strictly after setContentView to ensure decor view is initialized)
             applyFullScreen()
+            window?.decorView?.post {
+                applyFullScreen()
+            }
 
             surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
                 override fun surfaceCreated(holder: SurfaceHolder) {
@@ -155,11 +158,13 @@ class ReceiverActivity : Activity() {
             // Safe Lifecycle: Display an Android Toast on UI thread and finish() gracefully back to Flutter
             Log.e(TAG, "Safe Lifecycle: Unhandled error in onCreate: ${e.message}", e)
             runOnUiThread {
-                Toast.makeText(
-                    this,
-                    "Receiver error: ${e.message ?: "Initialization failed"}",
-                    Toast.LENGTH_LONG
-                ).show()
+                if (!isFinishing && !isDestroyed) {
+                    Toast.makeText(
+                        this,
+                        "Receiver error: ${e.message ?: "Initialization failed"}",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
                 finish()
             }
         }
@@ -180,27 +185,39 @@ class ReceiverActivity : Activity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) {
+        if (hasFocus && !isFinishing && !isDestroyed) {
             applyFullScreen()
         }
     }
 
-    private fun applyFullScreen() {
+    internal fun applyFullScreen() {
         try {
+            val win = window ?: return
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val controller = try {
-                    window.decorView.windowInsetsController ?: window.insetsController
-                } catch (e: Exception) {
+                    win.decorView.windowInsetsController ?: win.insetsController
+                } catch (e: Throwable) {
                     Log.w(TAG, "Failed to get WindowInsetsController: ${e.message}")
                     null
                 }
-                controller?.let {
-                    it.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
-                    it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                if (controller != null) {
+                    controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+                    controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                } else {
+                    // Fallback to legacy systemUiVisibility if controller is not yet available before view attachment
+                    @Suppress("DEPRECATION")
+                    win.decorView.systemUiVisibility = (
+                        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                        or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                        or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                        or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                        or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        or View.SYSTEM_UI_FLAG_FULLSCREEN
+                    )
                 }
             } else {
                 @Suppress("DEPRECATION")
-                window.decorView.systemUiVisibility = (
+                win.decorView.systemUiVisibility = (
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
                     or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
                     or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
@@ -209,13 +226,14 @@ class ReceiverActivity : Activity() {
                     or View.SYSTEM_UI_FLAG_FULLSCREEN
                 )
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.w(TAG, "Failed to apply full screen: ${e.message}")
         }
     }
 
     private fun updateStatus(text: String, showProgress: Boolean = true) {
         runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
             if (!::statusTextView.isInitialized || !::progressBar.isInitialized || !::statusOverlay.isInitialized) {
                 return@runOnUiThread
             }
@@ -229,6 +247,7 @@ class ReceiverActivity : Activity() {
 
     private fun hideOverlay() {
         runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
             if (::statusOverlay.isInitialized) {
                 statusOverlay.visibility = View.GONE
             }
@@ -241,6 +260,7 @@ class ReceiverActivity : Activity() {
      * the Bulk IN endpoint is successfully opened and verified (Requirement 4).
      */
     private fun startReceiverPipeline() {
+        stopReceiverPipeline()
         try {
             val manager = getSystemService(Context.USB_SERVICE) as? UsbManager
             val receiver = UsbHostReceiver(
@@ -298,7 +318,9 @@ class ReceiverActivity : Activity() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start UsbHostReceiver: ${e.message}", e)
             runOnUiThread {
-                Toast.makeText(this, "Receiver connection error: ${e.message}", Toast.LENGTH_SHORT).show()
+                if (!isFinishing && !isDestroyed) {
+                    Toast.makeText(this, "Receiver connection error: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
                 finish()
             }
         }
@@ -315,6 +337,7 @@ class ReceiverActivity : Activity() {
             Log.w(TAG, "Cannot initialize MediaCodec decoder: Surface is not valid")
             return
         }
+        if (isFinishing || isDestroyed) return
         try {
             val format = MediaFormat.createVideoFormat(
                 MediaFormat.MIMETYPE_VIDEO_AVC,
@@ -345,7 +368,9 @@ class ReceiverActivity : Activity() {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize MediaCodec decoder: ${e.message}", e)
             runOnUiThread {
-                Toast.makeText(this, "Decoder error: ${e.message}", Toast.LENGTH_SHORT).show()
+                if (!isFinishing && !isDestroyed) {
+                    Toast.makeText(this, "Decoder error: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
                 finish()
             }
         }
@@ -433,8 +458,9 @@ class ReceiverActivity : Activity() {
         }
     }
 
-    private fun adjustSurfaceAspectRatio(videoWidth: Int, videoHeight: Int) {
+    internal fun adjustSurfaceAspectRatio(videoWidth: Int, videoHeight: Int) {
         try {
+            if (isFinishing || isDestroyed) return
             if (!::surfaceView.isInitialized || !::rootLayout.isInitialized) {
                 return
             }
@@ -445,7 +471,8 @@ class ReceiverActivity : Activity() {
                 val videoRatio = videoWidth.toDouble() / videoHeight
                 val screenRatio = rootW.toDouble() / rootH
 
-                val lp = surfaceView.layoutParams as FrameLayout.LayoutParams
+                val lp = (surfaceView.layoutParams as? FrameLayout.LayoutParams)
+                    ?: FrameLayout.LayoutParams(rootW, rootH)
                 if (videoRatio > screenRatio) {
                     lp.width = rootW
                     lp.height = (rootW / videoRatio).toInt()
@@ -455,8 +482,12 @@ class ReceiverActivity : Activity() {
                 }
                 lp.gravity = Gravity.CENTER
                 surfaceView.layoutParams = lp
+            } else {
+                rootLayout.post {
+                    adjustSurfaceAspectRatio(videoWidth, videoHeight)
+                }
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.w(TAG, "Error adjusting aspect ratio: ${e.message}")
         }
     }
@@ -465,6 +496,7 @@ class ReceiverActivity : Activity() {
     private fun stopDecoder() {
         if (!isDecoding && mediaCodec == null) return
         isDecoding = false
+        hasReceivedFirstFrame = false
 
         if (Thread.currentThread() !== drainThread) {
             try {
@@ -503,7 +535,7 @@ class ReceiverActivity : Activity() {
 
     override fun onDestroy() {
         stopReceiverPipeline()
-        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         super.onDestroy()
     }
 }

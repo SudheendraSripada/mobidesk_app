@@ -70,6 +70,25 @@ class UsbHostReceiverTest {
     }
 
     @Test
+    fun testIsAccessory() {
+        // Valid Google AOA VID and PIDs
+        assertTrue(UsbHostReceiver.isAccessory(0x18D1, 0x2D00))
+        assertTrue(UsbHostReceiver.isAccessory(0x18D1, 0x2D01))
+        assertTrue(UsbHostReceiver.isAccessory(0x18D1, 0x2D02))
+        assertTrue(UsbHostReceiver.isAccessory(0x18D1, 0x2D03))
+        assertTrue(UsbHostReceiver.isAccessory(0x18D1, 0x2D04))
+        assertTrue(UsbHostReceiver.isAccessory(0x18D1, 0x2D05))
+
+        // Non-matching vendor ID
+        assertFalse(UsbHostReceiver.isAccessory(0x04e8, 0x2D00))
+        assertFalse(UsbHostReceiver.isAccessory(0x1234, 0x2D00))
+
+        // Non-matching product ID with Google vendor
+        assertFalse(UsbHostReceiver.isAccessory(0x18D1, 0x4ee1))
+        assertFalse(UsbHostReceiver.isAccessory(0x18D1, 0x0000))
+    }
+
+    @Test
     fun testFramingProtocolTypesAndHeartbeat() {
         assertEquals(1.toByte(), FramingProtocol.TYPE_CONFIG)
         assertEquals(2.toByte(), FramingProtocol.TYPE_FRAME)

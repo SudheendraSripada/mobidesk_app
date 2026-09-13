@@ -129,10 +129,10 @@ class ReceiverActivity : Activity() {
                 override fun surfaceCreated(holder: SurfaceHolder) {
                     Log.i(TAG, "Surface created, preparing USB receiver pipeline...")
                     currentSurface = holder.surface
-                    if (usbHostReceiver == null) {
-                        startReceiverPipeline()
-                    } else if (verifiedBulkInEndpoint != null && !isDecoding) {
+                    val inEp = verifiedBulkInEndpoint
+                    if (inEp != null && !isDecoding) {
                         initMediaCodecDecoder(holder.surface)
+                        usbHostReceiver?.requestKeyframeFromSender()
                     }
                 }
 
@@ -147,6 +147,9 @@ class ReceiverActivity : Activity() {
                     stopDecoder()
                 }
             })
+
+            // Requirement 3: Start receiver pipeline safely inside onCreate try-catch
+            startReceiverPipeline()
         } catch (e: Exception) {
             // Safe Lifecycle: Display an Android Toast on UI thread and finish() gracefully back to Flutter
             Log.e(TAG, "Safe Lifecycle: Unhandled error in onCreate: ${e.message}", e)
@@ -166,7 +169,11 @@ class ReceiverActivity : Activity() {
         setIntent(intent)
         Log.i(TAG, "onNewIntent received: action=${intent?.action}")
         if (intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
-            usbHostReceiver?.triggerScan()
+            if (usbHostReceiver == null) {
+                startReceiverPipeline()
+            } else {
+                usbHostReceiver?.triggerScan()
+            }
         }
     }
 
@@ -237,6 +244,7 @@ class ReceiverActivity : Activity() {
                         val surface = currentSurface
                         if (surface != null && surface.isValid) {
                             initMediaCodecDecoder(surface)
+                            usbHostReceiver?.requestKeyframeFromSender()
                         } else {
                             Log.w(TAG, "Surface is not yet ready when Bulk IN endpoint was verified")
                         }

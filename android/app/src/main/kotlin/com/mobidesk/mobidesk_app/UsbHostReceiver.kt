@@ -92,10 +92,17 @@ class UsbHostReceiver(
         }
 
         /**
+         * Checks if the VID/PID matches the standard Google AOA Accessory VID and known AOA PIDs.
+         */
+        fun isAccessory(vendorId: Int, productId: Int): Boolean {
+            return vendorId == AOA_VENDOR_ID && productId in AOA_PRODUCT_IDS
+        }
+
+        /**
          * Checks if the device matches the standard Google AOA Accessory VID/PID.
          */
         fun isAccessoryDevice(device: UsbDevice): Boolean {
-            return device.vendorId == AOA_VENDOR_ID && device.productId in AOA_PRODUCT_IDS
+            return isAccessory(device.vendorId, device.productId)
         }
 
         /**
@@ -211,7 +218,7 @@ class UsbHostReceiver(
                         }
                         if (completed.compareAndSet(false, true)) {
                             try {
-                                recvContext?.unregisterReceiver(this)
+                                context.unregisterReceiver(this)
                             } catch (_: Exception) {}
                             val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
                             Log.i(TAG, "USB permission callback received for ${device.deviceName}, granted=$granted")
@@ -354,7 +361,7 @@ class UsbHostReceiver(
                         permLatch.countDown()
                     }
                     try {
-                        permLatch.await(15, TimeUnit.SECONDS)
+                        permLatch.await(45, TimeUnit.SECONDS)
                     } finally {
                         cancelPerm()
                     }
@@ -388,6 +395,7 @@ class UsbHostReceiver(
 
                 // 4. Bulk IN Reading Loop:
                 val buffer = ByteArray(READ_BUFFER_SIZE)
+                var consecutiveFailures = 0
                 while (isRunning && isStreaming && usbConnection != null && inEndpoint != null) {
                     val bytesRead = conn.bulkTransfer(
                         endpointInVerified,
@@ -396,10 +404,27 @@ class UsbHostReceiver(
                         BULK_TRANSFER_TIMEOUT_MS
                     )
                     if (bytesRead > 0) {
+                        consecutiveFailures = 0
                         demuxer.feedData(buffer, 0, bytesRead)
                     } else if (bytesRead < 0) {
-                        // Negative code indicates timeout or USB stall; if disconnected, exit loop
+                        // Negative code indicates timeout or USB stall; check if device physically disconnected
                         if (!isRunning || !isStreaming) break
+
+                        consecutiveFailures++
+                        val currentDeviceList = manager.deviceList
+                        val stillConnected = currentDeviceList?.values?.any { it.deviceName == device.deviceName } == true
+                        if (!stillConnected) {
+                            Log.i(TAG, "USB device ${device.deviceName} physically disconnected during stream")
+                            break
+                        }
+
+                        if (consecutiveFailures >= 3) {
+                            try {
+                                Thread.sleep(50)
+                            } catch (_: InterruptedException) {
+                                break
+                            }
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -409,7 +434,6 @@ class UsbHostReceiver(
                 }
             } finally {
                 cleanupConnection()
-                onDisconnected?.invoke()
             }
 
             if (isRunning) {
@@ -460,7 +484,7 @@ class UsbHostReceiver(
             }
 
             // Wait for re-enumeration as accessory device
-            val deadline = System.currentTimeMillis() + 4500L
+            val deadline = System.currentTimeMillis() + 6000L
             var foundAccessory = false
             while (isRunning && System.currentTimeMillis() < deadline) {
                 val list = manager.deviceList
@@ -492,7 +516,7 @@ class UsbHostReceiver(
                 permLatch.countDown()
             }
             try {
-                permLatch.await(10, TimeUnit.SECONDS)
+                permLatch.await(45, TimeUnit.SECONDS)
             } finally {
                 cancelPerm()
             }
@@ -653,6 +677,7 @@ class UsbHostReceiver(
     }
 
     private fun cleanupConnection() {
+        val wasConnected = isStreaming || usbConnection != null
         isStreaming = false
         try {
             claimedInterface?.let { usbConnection?.releaseInterface(it) }
@@ -665,6 +690,9 @@ class UsbHostReceiver(
         inEndpoint = null
         outEndpoint = null
         demuxer.reset()
+        if (wasConnected) {
+            onDisconnected?.invoke()
+        }
     }
 
     /**

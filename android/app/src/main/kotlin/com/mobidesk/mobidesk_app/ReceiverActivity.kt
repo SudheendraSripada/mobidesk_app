@@ -70,9 +70,6 @@ class ReceiverActivity : Activity() {
             // Keep screen awake while receiver is active
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-            // Enter native immersive full-screen mode
-            applyFullScreen()
-
             // Create UI layout programmatically: SurfaceView with a status overlay on top
             rootLayout = FrameLayout(this).apply {
                 setBackgroundColor(Color.BLACK)
@@ -125,13 +122,17 @@ class ReceiverActivity : Activity() {
 
             setContentView(rootLayout)
 
+            // Enter native immersive full-screen mode (strictly after setContentView to ensure decor view is initialized)
+            applyFullScreen()
+
             surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
                 override fun surfaceCreated(holder: SurfaceHolder) {
                     Log.i(TAG, "Surface created, preparing USB receiver pipeline...")
-                    currentSurface = holder.surface
+                    val surface = holder.surface
+                    currentSurface = surface
                     val inEp = verifiedBulkInEndpoint
-                    if (inEp != null && !isDecoding) {
-                        initMediaCodecDecoder(holder.surface)
+                    if (inEp != null && !isDecoding && surface != null && surface.isValid) {
+                        initMediaCodecDecoder(surface)
                         usbHostReceiver?.requestKeyframeFromSender()
                     }
                 }
@@ -185,26 +186,39 @@ class ReceiverActivity : Activity() {
     }
 
     private fun applyFullScreen() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.insetsController?.let { controller ->
-                controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
-                controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val controller = try {
+                    window.decorView.windowInsetsController ?: window.insetsController
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to get WindowInsetsController: ${e.message}")
+                    null
+                }
+                controller?.let {
+                    it.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
+                    it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                }
+            } else {
+                @Suppress("DEPRECATION")
+                window.decorView.systemUiVisibility = (
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                    or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                    or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                    or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                    or View.SYSTEM_UI_FLAG_FULLSCREEN
+                )
             }
-        } else {
-            @Suppress("DEPRECATION")
-            window.decorView.systemUiVisibility = (
-                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
-                or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                or View.SYSTEM_UI_FLAG_FULLSCREEN
-            )
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to apply full screen: ${e.message}")
         }
     }
 
     private fun updateStatus(text: String, showProgress: Boolean = true) {
         runOnUiThread {
+            if (!::statusTextView.isInitialized || !::progressBar.isInitialized || !::statusOverlay.isInitialized) {
+                return@runOnUiThread
+            }
             statusTextView.text = text
             progressBar.visibility = if (showProgress) View.VISIBLE else View.GONE
             if (!hasReceivedFirstFrame) {
@@ -215,7 +229,9 @@ class ReceiverActivity : Activity() {
 
     private fun hideOverlay() {
         runOnUiThread {
-            statusOverlay.visibility = View.GONE
+            if (::statusOverlay.isInitialized) {
+                statusOverlay.visibility = View.GONE
+            }
         }
     }
 
@@ -295,6 +311,10 @@ class ReceiverActivity : Activity() {
     @Synchronized
     private fun initMediaCodecDecoder(surface: Surface) {
         if (isDecoding) return
+        if (!surface.isValid) {
+            Log.w(TAG, "Cannot initialize MediaCodec decoder: Surface is not valid")
+            return
+        }
         try {
             val format = MediaFormat.createVideoFormat(
                 MediaFormat.MIMETYPE_VIDEO_AVC,
@@ -415,6 +435,9 @@ class ReceiverActivity : Activity() {
 
     private fun adjustSurfaceAspectRatio(videoWidth: Int, videoHeight: Int) {
         try {
+            if (!::surfaceView.isInitialized || !::rootLayout.isInitialized) {
+                return
+            }
             surfaceView.holder.setFixedSize(videoWidth, videoHeight)
             val rootW = rootLayout.width
             val rootH = rootLayout.height

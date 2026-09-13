@@ -290,4 +290,10 @@ class UsbHostReceiverTest {
         assertEquals(FramingProtocol.TYPE_CONFIG, receivedFrames[0].first)
         assertArrayEquals(completePayload, receivedFrames[0].fourth)
     }
+
+    @Test
+    fun testReceiverActivityConstants() {
+        assertEquals("extra_host", ReceiverActivity.EXTRA_HOST)
+        assertEquals("extra_port", ReceiverActivity.EXTRA_PORT)
+    }
 }

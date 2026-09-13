@@ -55,13 +55,8 @@ class MainActivity : FlutterActivity() {
                     result.success(ScreenCaptureService.isServiceRunning)
                 }
                 "startReceiver" -> {
-                    try {
-                        val intent = Intent(this, ReceiverActivity::class.java)
-                        startActivity(intent)
-                        result.success(true)
-                    } catch (e: Exception) {
-                        result.error("RECEIVER_START_FAILED", "Failed to start ReceiverActivity: ${e.message}", null)
-                    }
+                    val usbManager = getSystemService(Context.USB_SERVICE) as? UsbManager
+                    UsbHostReceiver.handleStartReceiver(this, usbManager, result)
                 }
                 "getUsbStatus" -> {
                     try {

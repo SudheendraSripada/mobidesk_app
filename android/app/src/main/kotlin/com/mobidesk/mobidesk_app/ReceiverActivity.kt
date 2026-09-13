@@ -1,8 +1,10 @@
 package com.mobidesk.mobidesk_app
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbManager
 import android.media.MediaCodec
 import android.media.MediaFormat
@@ -22,18 +24,23 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
 import kotlin.concurrent.thread
 
 /**
  * Native full-screen Activity on Phone B (Receiver / Simulated Dock).
- * Hosts a SurfaceView, initializes MediaCodec hardware decoder for MIME video/avc (H.264),
- * runs AoaHostManager as USB Host to handshake with Phone A and stream USB Bulk IN packets,
- * and renders decoded frames directly to the SurfaceView.
+ *
+ * Implements safe lifecycle handling:
+ * 1. Wraps all setup in onCreate() inside a try-catch block. On error, displays a Toast and finish()es gracefully.
+ * 2. Manages UsbHostReceiver with isolated background handshake and runtime permissions.
+ * 3. Only initializes MediaCodec decoder and binds Surface once the Bulk IN endpoint is successfully opened and verified.
  */
 class ReceiverActivity : Activity() {
 
     companion object {
         private const val TAG = "ReceiverActivity"
+        const val EXTRA_HOST = "extra_host"
+        const val EXTRA_PORT = "extra_port"
         private const val TIMEOUT_USEC = 10_000L
         private const val DEFAULT_DECODER_WIDTH = 720
         private const val DEFAULT_DECODER_HEIGHT = 1280
@@ -46,8 +53,9 @@ class ReceiverActivity : Activity() {
     private lateinit var progressBar: ProgressBar
 
     private var mediaCodec: MediaCodec? = null
-    private var aoaHostManager: AoaHostManager? = null
+    private var usbHostReceiver: UsbHostReceiver? = null
     private var drainThread: Thread? = null
+    private var currentSurface: Surface? = null
 
     @Volatile
     private var isDecoding = false
@@ -56,88 +64,94 @@ class ReceiverActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        try {
+            // Keep screen awake while receiver is active
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // Keep screen awake while receiver is active
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            // Enter native immersive full-screen mode
+            applyFullScreen()
 
-        // Enter native immersive full-screen mode
-        applyFullScreen()
-
-        // Create UI layout programmatically: SurfaceView with a stylish status overlay on top
-        rootLayout = FrameLayout(this).apply {
-            setBackgroundColor(Color.BLACK)
-        }
-
-        surfaceView = SurfaceView(this).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                Gravity.CENTER
-            )
-        }
-        rootLayout.addView(surfaceView)
-
-        // Status overlay showing USB handshake and connection status
-        statusOverlay = FrameLayout(this).apply {
-            setBackgroundColor(Color.parseColor("#99000000"))
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-            )
-        }
-
-        val overlayContent = android.widget.LinearLayout(this).apply {
-            orientation = android.widget.LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.CENTER
-            )
-        }
-
-        progressBar = ProgressBar(this).apply {
-            isIndeterminate = true
-        }
-        overlayContent.addView(progressBar)
-
-        statusTextView = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
-            gravity = Gravity.CENTER
-            setPadding(32, 24, 32, 24)
-            text = "Initializing AOA 2.0 Host..."
-        }
-        overlayContent.addView(statusTextView)
-
-        statusOverlay.addView(overlayContent)
-        rootLayout.addView(statusOverlay)
-
-        setContentView(rootLayout)
-
-        surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: SurfaceHolder) {
-                Log.i(TAG, "Surface created, initializing decoder and AOA Host...")
-                startDecoderAndHost(holder.surface)
+            // Create UI layout programmatically: SurfaceView with a status overlay on top
+            rootLayout = FrameLayout(this).apply {
+                setBackgroundColor(Color.BLACK)
             }
 
-            override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                Log.i(TAG, "Surface dimension changed: ${width}x$height")
+            surfaceView = SurfaceView(this).apply {
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    Gravity.CENTER
+                )
+            }
+            rootLayout.addView(surfaceView)
+
+            // Status overlay showing USB handshake and connection status
+            statusOverlay = FrameLayout(this).apply {
+                setBackgroundColor(Color.parseColor("#99000000"))
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
             }
 
-            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                Log.i(TAG, "Surface destroyed, releasing decoder and AOA Host...")
-                stopDecoderAndHost()
+            val overlayContent = android.widget.LinearLayout(this).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
+                )
             }
-        })
-    }
 
-    override fun onNewIntent(intent: Intent?) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        Log.i(TAG, "onNewIntent received: action=${intent?.action}")
-        if (intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
-            aoaHostManager?.scanDevices()
+            progressBar = ProgressBar(this).apply {
+                isIndeterminate = true
+            }
+            overlayContent.addView(progressBar)
+
+            statusTextView = TextView(this).apply {
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                gravity = Gravity.CENTER
+                setPadding(32, 24, 32, 24)
+                text = "Connecting to USB AOA Host..."
+            }
+            overlayContent.addView(statusTextView)
+
+            statusOverlay.addView(overlayContent)
+            rootLayout.addView(statusOverlay)
+
+            setContentView(rootLayout)
+
+            surfaceView.holder.addCallback(object : SurfaceHolder.Callback {
+                override fun surfaceCreated(holder: SurfaceHolder) {
+                    Log.i(TAG, "Surface created, preparing USB receiver pipeline...")
+                    currentSurface = holder.surface
+                    startReceiverPipeline()
+                }
+
+                override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                    currentSurface = holder.surface
+                    Log.i(TAG, "Surface dimension changed: ${width}x$height")
+                }
+
+                override fun surfaceDestroyed(holder: SurfaceHolder) {
+                    Log.i(TAG, "Surface destroyed, releasing decoder and receiver...")
+                    currentSurface = null
+                    stopReceiverPipeline()
+                }
+            })
+        } catch (e: Exception) {
+            // Safe Lifecycle: Display an Android Toast on UI thread and finish() gracefully back to Flutter
+            Log.e(TAG, "Safe Lifecycle: Unhandled error in onCreate: ${e.message}", e)
+            runOnUiThread {
+                Toast.makeText(
+                    this,
+                    "Receiver error: ${e.message ?: "Initialization failed"}",
+                    Toast.LENGTH_LONG
+                ).show()
+                finish()
+            }
         }
     }
 
@@ -183,18 +197,79 @@ class ReceiverActivity : Activity() {
         }
     }
 
-    @Synchronized
-    private fun startDecoderAndHost(surface: Surface) {
-        if (isDecoding) return
-        if (!surface.isValid) {
-            Log.w(TAG, "Cannot start decoder: Surface is not valid.")
-            return
-        }
-        isDecoding = true
-        hasReceivedFirstFrame = false
-
+    /**
+     * Starts the USB receiver pipeline.
+     * Note: Does NOT initialize MediaCodec yet. MediaCodec is ONLY initialized once
+     * the Bulk IN endpoint is successfully opened and verified (Requirement 4).
+     */
+    private fun startReceiverPipeline() {
         try {
-            // Configure MediaCodec decoder for H.264 (video/avc)
+            val manager = getSystemService(Context.USB_SERVICE) as? UsbManager
+            val receiver = UsbHostReceiver(
+                context = this,
+                usbManager = manager,
+                onFrameReceived = { type, flags, ptsUs, payload ->
+                    feedDecoder(type, flags, ptsUs, payload)
+                }
+            ).apply {
+                // Requirement 4: Only initialize the MediaCodec decoder and bind the Surface
+                // once the Bulk IN endpoint is successfully opened and verified.
+                onBulkInReady = { inEp ->
+                    Log.i(TAG, "Bulk IN endpoint verified (${inEp.address}); initializing MediaCodec decoder and binding Surface...")
+                    runOnUiThread {
+                        if (isFinishing || isDestroyed) return@runOnUiThread
+                        val surface = currentSurface
+                        if (surface != null && surface.isValid) {
+                            initMediaCodecDecoder(surface)
+                        } else {
+                            Log.w(TAG, "Surface is invalid when Bulk IN endpoint was ready")
+                        }
+                    }
+                }
+
+                onStatusChanged = { msg ->
+                    updateStatus(msg, true)
+                }
+
+                onError = { err ->
+                    Log.w(TAG, "USB receiver error: $err")
+                    updateStatus(err, false)
+                    runOnUiThread {
+                        if (!isFinishing && !isDestroyed) {
+                            Toast.makeText(this@ReceiverActivity, err, Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }
+
+                onConnected = {
+                    updateStatus("Connected! Streaming video...", false)
+                }
+
+                onDisconnected = {
+                    hasReceivedFirstFrame = false
+                    updateStatus("USB Accessory disconnected. Reconnecting...", true)
+                }
+            }
+
+            usbHostReceiver = receiver
+            receiver.start()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start UsbHostReceiver: ${e.message}", e)
+            runOnUiThread {
+                Toast.makeText(this, "Receiver connection error: ${e.message}", Toast.LENGTH_SHORT).show()
+                finish()
+            }
+        }
+    }
+
+    /**
+     * Initializes MediaCodec hardware video/avc decoder and binds it to the Surface.
+     * Guaranteed to be called ONLY after Bulk IN endpoint is verified.
+     */
+    @Synchronized
+    private fun initMediaCodecDecoder(surface: Surface) {
+        if (isDecoding) return
+        try {
             val format = MediaFormat.createVideoFormat(
                 MediaFormat.MIMETYPE_VIDEO_AVC,
                 DEFAULT_DECODER_WIDTH,
@@ -214,43 +289,24 @@ class ReceiverActivity : Activity() {
             codec.start()
             codec.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT)
             mediaCodec = codec
-            Log.i(TAG, "MediaCodec video/avc decoder configured and started.")
+            isDecoding = true
+            hasReceivedFirstFrame = false
+            Log.i(TAG, "MediaCodec video/avc decoder successfully configured and bound to Surface.")
 
-            // Drain thread rendering decoded frames directly to the SurfaceView
             drainThread = thread(name = "ReceiverDrainThread") {
                 drainDecoder()
             }
-
-            // Start AOA Host Manager to handshake and receive USB bulk video packets
-            val hostManager = AoaHostManager(this) { type, flags, ptsUs, payload ->
-                feedDecoder(type, flags, ptsUs, payload)
-            }.apply {
-                onStatusChanged = { status ->
-                    updateStatus(status, true)
-                }
-                onError = { errorMsg ->
-                    updateStatus(errorMsg, false)
-                }
-                onConnected = {
-                    updateStatus("Connected! Receiving video stream...", false)
-                }
-                onDisconnected = {
-                    hasReceivedFirstFrame = false
-                    updateStatus("USB Accessory disconnected. Reconnecting...", true)
-                }
-            }
-            hostManager.start()
-            aoaHostManager = hostManager
-
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start decoder or AOA Host: ${e.message}", e)
-            updateStatus("Failed to initialize decoder: ${e.message}", false)
-            stopDecoderAndHost()
+            Log.e(TAG, "Failed to initialize MediaCodec decoder: ${e.message}", e)
+            runOnUiThread {
+                Toast.makeText(this, "Decoder error: ${e.message}", Toast.LENGTH_SHORT).show()
+                finish()
+            }
         }
     }
 
     /**
-     * Feeds incoming demuxed binary frames directly into MediaCodec decoder.
+     * Feeds incoming demuxed frames into MediaCodec input buffers.
      */
     private fun feedDecoder(type: Byte, flags: Byte, ptsUs: Long, payload: ByteArray) {
         val codec = mediaCodec ?: return
@@ -282,7 +338,6 @@ class ReceiverActivity : Activity() {
                     }
                 }
 
-                // Use ptsUs or 0L for instant rendering
                 codec.queueInputBuffer(inputBufferIndex, 0, toCopy, ptsUs, bufferFlags)
             }
         } catch (e: Exception) {
@@ -302,7 +357,6 @@ class ReceiverActivity : Activity() {
             try {
                 val outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, TIMEOUT_USEC)
                 if (outputBufferIndex >= 0) {
-                    // Instruct MediaCodec to render frame directly to SurfaceView
                     codec.releaseOutputBuffer(outputBufferIndex, true)
 
                     if (!hasReceivedFirstFrame) {
@@ -355,20 +409,22 @@ class ReceiverActivity : Activity() {
     }
 
     @Synchronized
-    private fun stopDecoderAndHost() {
-        if (!isDecoding) return
+    private fun stopReceiverPipeline() {
+        if (!isDecoding && usbHostReceiver == null) return
         isDecoding = false
 
         try {
-            aoaHostManager?.stop()
+            usbHostReceiver?.stop()
         } catch (e: Exception) {
-            Log.w(TAG, "Error stopping AoaHostManager: ${e.message}")
+            Log.w(TAG, "Error stopping UsbHostReceiver: ${e.message}")
         }
-        aoaHostManager = null
+        usbHostReceiver = null
 
-        try {
-            drainThread?.join(1000)
-        } catch (_: InterruptedException) {}
+        if (Thread.currentThread() !== drainThread) {
+            try {
+                drainThread?.join(1000)
+            } catch (_: InterruptedException) {}
+        }
         drainThread = null
 
         try {
@@ -383,11 +439,11 @@ class ReceiverActivity : Activity() {
         }
         mediaCodec = null
 
-        Log.i(TAG, "Decoder and AOA Host stopped.")
+        Log.i(TAG, "Receiver pipeline stopped.")
     }
 
     override fun onDestroy() {
-        stopDecoderAndHost()
+        stopReceiverPipeline()
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         super.onDestroy()
     }

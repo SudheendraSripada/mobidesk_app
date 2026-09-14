@@ -72,19 +72,19 @@ class ReceiverActivity : Activity() {
     private var verifiedBulkInEndpoint: UsbEndpoint? = null
 
     @Volatile
-    private var isDecoding = false
+    internal var isDecoding = false
     @Volatile
-    private var hasReceivedFirstFrame = false
+    internal var hasReceivedFirstFrame = false
     @Volatile
-    private var cachedConfigPacket: ByteArray? = null
+    internal var cachedConfigPacket: ByteArray? = null
 
     @Volatile
-    private var isPhoneSleeping = false
+    internal var isPhoneSleeping = false
     @Volatile
-    private var lastRenderedFrameTimeMs = 0L
+    internal var lastRenderedFrameTimeMs = 0L
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private var inactivityWatchdogRunnable: Runnable? = null
+    internal var inactivityWatchdogRunnable: Runnable? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -335,27 +335,37 @@ class ReceiverActivity : Activity() {
         }
     }
 
-    private fun handleSleepState(isSleep: Boolean) {
+    internal fun handleSleepState(isSleep: Boolean) {
         if (isPhoneSleeping == isSleep) return
         isPhoneSleeping = isSleep
+        if (!isSleep) {
+            lastRenderedFrameTimeMs = System.currentTimeMillis()
+        }
         runOnUiThread {
             if (isFinishing || isDestroyed) return@runOnUiThread
             if (::sleepOverlay.isInitialized) {
-                sleepOverlay.visibility = if (isSleep) View.VISIBLE else View.GONE
+                sleepOverlay.visibility = if (isPhoneSleeping) View.VISIBLE else View.GONE
             }
         }
     }
 
-    private fun startInactivityWatchdog() {
+    internal fun evaluateInactivity(now: Long): Boolean {
+        if (!isFinishing && !isDestroyed && isDecoding && hasReceivedFirstFrame) {
+            if (now - lastRenderedFrameTimeMs > INACTIVITY_WATCHDOG_TIMEOUT_MS) {
+                handleSleepState(true)
+                return true
+            }
+        }
+        return false
+    }
+
+    internal fun startInactivityWatchdog() {
         stopInactivityWatchdog()
         val watchdog = object : Runnable {
             override fun run() {
-                if (!isFinishing && !isDestroyed && isDecoding && hasReceivedFirstFrame) {
-                    val now = System.currentTimeMillis()
-                    if (now - lastRenderedFrameTimeMs > INACTIVITY_WATCHDOG_TIMEOUT_MS) {
-                        handleSleepState(true)
-                    }
-                }
+                if (inactivityWatchdogRunnable !== this) return
+                if (isFinishing || isDestroyed) return
+                evaluateInactivity(System.currentTimeMillis())
                 mainHandler.postDelayed(this, 1000L)
             }
         }
@@ -363,7 +373,7 @@ class ReceiverActivity : Activity() {
         mainHandler.postDelayed(watchdog, 1000L)
     }
 
-    private fun stopInactivityWatchdog() {
+    internal fun stopInactivityWatchdog() {
         inactivityWatchdogRunnable?.let { mainHandler.removeCallbacks(it) }
         inactivityWatchdogRunnable = null
     }
@@ -423,6 +433,7 @@ class ReceiverActivity : Activity() {
                     } else {
                         updateStatus("Connected! Streaming video...", false)
                     }
+                    startInactivityWatchdog()
                 }
 
                 onDisconnected = {

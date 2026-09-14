@@ -402,4 +402,69 @@ class UsbHostReceiverTest {
     fun testReceiverActivityInactivityWatchdogConstant() {
         assertEquals(3500L, ReceiverActivity.INACTIVITY_WATCHDOG_TIMEOUT_MS)
     }
+
+    @Test
+    fun testReceiverActivitySleepStateTransitionsAndTimestampRefresh() {
+        val activity = ReceiverActivity()
+        assertFalse("Initial sleeping state should be false", activity.isPhoneSleeping)
+        assertEquals(0L, activity.lastRenderedFrameTimeMs)
+
+        // Enter sleep state
+        activity.handleSleepState(true)
+        assertTrue("isPhoneSleeping should be true after handleSleepState(true)", activity.isPhoneSleeping)
+
+        val beforeWake = System.currentTimeMillis()
+        Thread.sleep(5)
+        // Exit sleep state (wake up)
+        activity.handleSleepState(false)
+        assertFalse("isPhoneSleeping should be false after handleSleepState(false)", activity.isPhoneSleeping)
+        assertTrue(
+            "lastRenderedFrameTimeMs must be refreshed upon wake to prevent immediate re-sleep",
+            activity.lastRenderedFrameTimeMs >= beforeWake
+        )
+    }
+
+    @Test
+    fun testReceiverActivityEvaluateInactivityLogic() {
+        val activity = ReceiverActivity()
+        val now = 1_000_000L
+
+        // When not decoding, evaluateInactivity must return false
+        activity.isDecoding = false
+        activity.hasReceivedFirstFrame = true
+        activity.lastRenderedFrameTimeMs = now - 5000L
+        assertFalse("Should not trigger sleep when isDecoding is false", activity.evaluateInactivity(now))
+
+        // When hasReceivedFirstFrame is false, evaluateInactivity must return false
+        activity.isDecoding = true
+        activity.hasReceivedFirstFrame = false
+        assertFalse("Should not trigger sleep when hasReceivedFirstFrame is false", activity.evaluateInactivity(now))
+
+        // When actively decoding and within timeout (1000ms ago < 3500ms timeout)
+        activity.hasReceivedFirstFrame = true
+        activity.lastRenderedFrameTimeMs = now - 1000L
+        assertFalse("Should not trigger sleep when frame is fresh", activity.evaluateInactivity(now))
+        assertFalse("isPhoneSleeping should remain false", activity.isPhoneSleeping)
+
+        // When actively decoding and elapsed time exceeds 3500ms timeout (4000ms ago)
+        activity.lastRenderedFrameTimeMs = now - 4000L
+        assertTrue("Must trigger sleep when inactivity exceeds timeout", activity.evaluateInactivity(now))
+        assertTrue("isPhoneSleeping must be set to true", activity.isPhoneSleeping)
+
+        // Simulate wake up: handleSleepState(false) resets timestamp
+        activity.handleSleepState(false)
+        assertFalse("isPhoneSleeping must be false after wake", activity.isPhoneSleeping)
+        // Subsequent check at current time should not trigger sleep
+        val wakeTime = activity.lastRenderedFrameTimeMs
+        assertFalse("Immediate check after wake must not re-trigger sleep", activity.evaluateInactivity(wakeTime + 500L))
+    }
+
+    @Test
+    fun testReceiverActivityStopInactivityWatchdogClearsRunnable() {
+        val activity = ReceiverActivity()
+        val dummyRunnable = Runnable {}
+        activity.inactivityWatchdogRunnable = dummyRunnable
+        activity.stopInactivityWatchdog()
+        assertNull("stopInactivityWatchdog must nullify inactivityWatchdogRunnable", activity.inactivityWatchdogRunnable)
+    }
 }

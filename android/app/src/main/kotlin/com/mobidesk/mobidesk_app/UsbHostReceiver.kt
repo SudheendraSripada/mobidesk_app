@@ -634,7 +634,6 @@ class UsbHostReceiver(
      * Prioritizes the true AOA Accessory interface and skips ADB interfaces (subclass 0x42, protocol 0x01).
      */
     private fun findEndpoints(device: UsbDevice): Triple<UsbInterface, UsbEndpoint, UsbEndpoint?>? {
-        var nonAdbBoth: Triple<UsbInterface, UsbEndpoint, UsbEndpoint?>? = null
         var nonAdbInOnly: Triple<UsbInterface, UsbEndpoint, UsbEndpoint?>? = null
         var fallback: Triple<UsbInterface, UsbEndpoint, UsbEndpoint?>? = null
 
@@ -667,7 +666,7 @@ class UsbHostReceiver(
                 }
             }
         }
-        return nonAdbBoth ?: nonAdbInOnly ?: fallback
+        return nonAdbInOnly ?: fallback
     }
 
     /**

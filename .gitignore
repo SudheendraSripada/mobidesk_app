@@ -46,7 +46,7 @@ app.*.map.json
 
 # Generated APK artifacts
 *.apk
-!executables-apks/final.apk
+!executables-apks/final-version-2.apk
 
 # Widget Preview related
 .widget_preview/

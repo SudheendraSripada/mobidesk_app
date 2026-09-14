@@ -46,6 +46,9 @@ class AoaAccessoryManager(private val context: Context) {
     @Volatile
     private var latestConfigHeader: ByteArray? = null
 
+    @Volatile
+    private var configSentToHost = false
+
     var onAccessoryConnected: (() -> Unit)? = null
     var onAccessoryDisconnected: (() -> Unit)? = null
     var onKeyframeRequested: (() -> Unit)? = null
@@ -162,24 +165,7 @@ class AoaAccessoryManager(private val context: Context) {
             Log.i(TAG, "Successfully opened USB Accessory FileOutputStream and FileInputStream.")
 
             // Send cached SPS/PPS config immediately upon connection if available
-            latestConfigHeader?.let { config ->
-                try {
-                    outputStream?.let { out ->
-                        FramingProtocol.writeFrame(
-                            out,
-                            FramingProtocol.TYPE_CONFIG,
-                            FramingProtocol.FLAG_KEYFRAME,
-                            config,
-                            0,
-                            config.size,
-                            0L
-                        )
-                        Log.i(TAG, "Sent cached SPS/PPS config frame to newly connected accessory host.")
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed sending cached config: ${e.message}")
-                }
-            }
+            sendCachedConfigIfAvailable()
 
             // Start background reader for host signals (e.g. keyframe requests)
             readThread = thread(name = "AoaAccessoryReadThread") {
@@ -192,6 +178,33 @@ class AoaAccessoryManager(private val context: Context) {
             Log.e(TAG, "Failed to open USB Accessory: ${e.message}", e)
             closeAccessory()
             return false
+        }
+    }
+
+    /**
+     * Sends the cached SPS/PPS configuration bytes as the very first packet to Phone B.
+     */
+    @Synchronized
+    fun sendCachedConfigIfAvailable(): Boolean {
+        val config = latestConfigHeader ?: return false
+        val out = outputStream ?: return false
+        if (!isConnected) return false
+        return try {
+            FramingProtocol.writeFrame(
+                out,
+                FramingProtocol.TYPE_CONFIG,
+                FramingProtocol.FLAG_KEYFRAME,
+                config,
+                0,
+                config.size,
+                0L
+            )
+            configSentToHost = true
+            Log.i(TAG, "Sent cached SPS/PPS config frame (${config.size} bytes) to newly connected accessory host.")
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed sending cached config: ${e.message}")
+            false
         }
     }
 
@@ -227,14 +240,17 @@ class AoaAccessoryManager(private val context: Context) {
     @Synchronized
     fun sendConfig(configData: ByteArray) {
         latestConfigHeader = configData.copyOf()
-        sendFrame(
-            FramingProtocol.TYPE_CONFIG,
-            FramingProtocol.FLAG_KEYFRAME,
-            0L,
-            configData,
-            0,
-            configData.size
-        )
+        if (isConnected) {
+            sendFrame(
+                FramingProtocol.TYPE_CONFIG,
+                FramingProtocol.FLAG_KEYFRAME,
+                0L,
+                configData,
+                0,
+                configData.size
+            )
+            configSentToHost = true
+        }
     }
 
     /**
@@ -253,7 +269,27 @@ class AoaAccessoryManager(private val context: Context) {
         if (!isConnected) return
 
         try {
+            // Ensure cached config (SPS/PPS) is sent as the very first packet before any standard video frame
+            if (type != FramingProtocol.TYPE_CONFIG && !configSentToHost) {
+                latestConfigHeader?.let { config ->
+                    FramingProtocol.writeFrame(
+                        out,
+                        FramingProtocol.TYPE_CONFIG,
+                        FramingProtocol.FLAG_KEYFRAME,
+                        config,
+                        0,
+                        config.size,
+                        0L
+                    )
+                    configSentToHost = true
+                    Log.i(TAG, "Prepended cached SPS/PPS config frame (${config.size} bytes) before standard video frame.")
+                }
+            }
+
             FramingProtocol.writeFrame(out, type, flags, payload, offset, length, ptsUs)
+            if (type == FramingProtocol.TYPE_CONFIG) {
+                configSentToHost = true
+            }
         } catch (e: IOException) {
             Log.w(TAG, "Error writing frame to USB accessory stream: ${e.message}")
             closeAccessory()
@@ -264,6 +300,7 @@ class AoaAccessoryManager(private val context: Context) {
     fun closeAccessory() {
         if (!isConnected && fileDescriptor == null) return
         isConnected = false
+        configSentToHost = false
 
         try {
             outputStream?.close()

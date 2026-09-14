@@ -70,6 +70,9 @@ class ScreenCaptureService : Service() {
     private var aoaAccessoryManager: AoaAccessoryManager? = null
 
     @Volatile
+    private var cachedCodecConfig: ByteArray? = null
+
+    @Volatile
     private var isStreaming = false
     @Volatile
     private var isStopping = false
@@ -175,7 +178,10 @@ class ScreenCaptureService : Service() {
         // 6. Initialize AoaAccessoryManager for USB Open Accessory bulk transfer
         val accessoryMgr = AoaAccessoryManager(this).apply {
             onAccessoryConnected = {
-                Log.i(TAG, "USB Accessory connected to Host. Requesting keyframe...")
+                Log.i(TAG, "USB Accessory connected to Host. Forcing instant keyframe...")
+                cachedCodecConfig?.let { config ->
+                    sendConfig(config)
+                }
                 requestSyncFrame()
             }
             onAccessoryDisconnected = {
@@ -183,6 +189,9 @@ class ScreenCaptureService : Service() {
             }
             onKeyframeRequested = {
                 Log.i(TAG, "Host requested keyframe via AOA channel.")
+                cachedCodecConfig?.let { config ->
+                    sendConfig(config)
+                }
                 requestSyncFrame()
             }
         }
@@ -222,10 +231,10 @@ class ScreenCaptureService : Service() {
                     } catch (_: Exception) {}
                 }
 
-                // Repeat previous frame on static screen for continuous smooth output
+                // Repeat previous frame on static screen for continuous smooth output (100ms)
                 setLong(
                     MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER,
-                    1_000_000L / DEFAULT_FRAME_RATE
+                    100000L
                 )
             }
 
@@ -259,6 +268,14 @@ class ScreenCaptureService : Service() {
             isServiceRunning = true
             Log.i(TAG, "MediaCodec CBR encoder initialized (${width}x${height} @ ${DEFAULT_FRAME_RATE} FPS)")
 
+            // Force immediate keyframe on startup/connection if accessory is already connected
+            if (aoaAccessoryManager?.isConnected == true) {
+                cachedCodecConfig?.let { config ->
+                    aoaAccessoryManager?.sendConfig(config)
+                }
+                requestSyncFrame()
+            }
+
             // 9. In background thread, drain encoded NAL units and stream with binary framing header
             drainThread = thread(name = "ScreenCaptureDrainThread") {
                 drainCodec()
@@ -276,11 +293,16 @@ class ScreenCaptureService : Service() {
      */
     fun requestSyncFrame() {
         try {
-            val params = Bundle().apply {
-                putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+            val codec = mediaCodec
+            if (codec != null) {
+                val params = Bundle().apply {
+                    putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+                }
+                codec.setParameters(params)
+                Log.i(TAG, "Requested sync frame (keyframe) from MediaCodec")
+            } else {
+                Log.w(TAG, "Cannot request sync frame: mediaCodec is null")
             }
-            mediaCodec?.setParameters(params)
-            Log.i(TAG, "Requested sync frame (keyframe) from MediaCodec")
         } catch (e: Exception) {
             Log.w(TAG, "Could not request sync frame: ${e.message}")
         }
@@ -311,6 +333,7 @@ class ScreenCaptureService : Service() {
 
                         if (isConfig) {
                             // SPS / PPS configuration frame
+                            cachedCodecConfig = packet.copyOf()
                             aoaAccessoryManager?.sendConfig(packet)
                         } else {
                             val flags = if (isKeyframe) FramingProtocol.FLAG_KEYFRAME else FramingProtocol.FLAG_NONE
@@ -342,6 +365,7 @@ class ScreenCaptureService : Service() {
                         val spsPps = ByteArray(spsBytes.size + ppsBytes.size)
                         System.arraycopy(spsBytes, 0, spsPps, 0, spsBytes.size)
                         System.arraycopy(ppsBytes, 0, spsPps, spsBytes.size, ppsBytes.size)
+                        cachedCodecConfig = spsPps
                         aoaAccessoryManager?.sendConfig(spsPps)
                     }
                 }
@@ -457,6 +481,7 @@ class ScreenCaptureService : Service() {
             Log.w(TAG, "Error stopping aoaAccessoryManager: ${e.message}")
         }
         aoaAccessoryManager = null
+        cachedCodecConfig = null
 
         projectionCallback?.let {
             try {

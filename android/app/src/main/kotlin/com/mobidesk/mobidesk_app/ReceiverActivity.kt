@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.PixelFormat
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbManager
 import android.media.MediaCodec
@@ -70,12 +71,14 @@ class ReceiverActivity : Activity() {
             // Keep screen awake while receiver is active
             window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-            // Create UI layout programmatically: SurfaceView with a status overlay on top
+            // Create UI layout programmatically: SurfaceView with a transparent status overlay on top
             rootLayout = FrameLayout(this).apply {
-                setBackgroundColor(Color.BLACK)
+                setBackgroundColor(Color.TRANSPARENT)
             }
 
             surfaceView = SurfaceView(this).apply {
+                setZOrderMediaOverlay(true)
+                holder.setFormat(PixelFormat.TRANSLUCENT)
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -86,7 +89,7 @@ class ReceiverActivity : Activity() {
 
             // Status overlay showing USB handshake and connection status
             statusOverlay = FrameLayout(this).apply {
-                setBackgroundColor(Color.parseColor("#99000000"))
+                setBackgroundColor(Color.TRANSPARENT)
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
@@ -96,6 +99,7 @@ class ReceiverActivity : Activity() {
             val overlayContent = android.widget.LinearLayout(this).apply {
                 orientation = android.widget.LinearLayout.VERTICAL
                 gravity = Gravity.CENTER
+                setBackgroundColor(Color.TRANSPARENT)
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -241,6 +245,8 @@ class ReceiverActivity : Activity() {
             progressBar.visibility = if (showProgress) View.VISIBLE else View.GONE
             if (!hasReceivedFirstFrame) {
                 statusOverlay.visibility = View.VISIBLE
+            } else {
+                statusOverlay.visibility = View.GONE
             }
         }
     }
@@ -302,7 +308,11 @@ class ReceiverActivity : Activity() {
                 }
 
                 onConnected = {
-                    updateStatus("Connected! Streaming video...", false)
+                    if (hasReceivedFirstFrame) {
+                        hideOverlay()
+                    } else {
+                        updateStatus("Connected! Streaming video...", false)
+                    }
                 }
 
                 onDisconnected = {
@@ -384,6 +394,15 @@ class ReceiverActivity : Activity() {
             // Heartbeat packet, do not feed into video decoder
             return
         }
+
+        // Hide overlay as soon as first video frame or config packet is received
+        if (type == FramingProtocol.TYPE_FRAME || type == FramingProtocol.TYPE_CONFIG) {
+            if (!hasReceivedFirstFrame) {
+                hasReceivedFirstFrame = true
+                hideOverlay()
+            }
+        }
+
         val codec = mediaCodec ?: return
         if (!isDecoding) return
 
@@ -432,6 +451,7 @@ class ReceiverActivity : Activity() {
             try {
                 val outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, TIMEOUT_USEC)
                 if (outputBufferIndex >= 0) {
+                    // MUST be true to render directly onto the Surface
                     codec.releaseOutputBuffer(outputBufferIndex, true)
 
                     if (!hasReceivedFirstFrame) {
@@ -441,8 +461,16 @@ class ReceiverActivity : Activity() {
                 } else if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     val newFormat = codec.outputFormat
                     Log.i(TAG, "Decoder output format changed: $newFormat")
-                    val videoWidth = if (newFormat.containsKey(MediaFormat.KEY_WIDTH)) newFormat.getInteger(MediaFormat.KEY_WIDTH) else 0
-                    val videoHeight = if (newFormat.containsKey(MediaFormat.KEY_HEIGHT)) newFormat.getInteger(MediaFormat.KEY_HEIGHT) else 0
+                    val cropLeft = if (newFormat.containsKey("crop-left")) newFormat.getInteger("crop-left") else 0
+                    val cropRight = if (newFormat.containsKey("crop-right")) newFormat.getInteger("crop-right") else 0
+                    val cropTop = if (newFormat.containsKey("crop-top")) newFormat.getInteger("crop-top") else 0
+                    val cropBottom = if (newFormat.containsKey("crop-bottom")) newFormat.getInteger("crop-bottom") else 0
+
+                    val videoWidth = if (cropRight > cropLeft) cropRight - cropLeft + 1
+                        else if (newFormat.containsKey(MediaFormat.KEY_WIDTH)) newFormat.getInteger(MediaFormat.KEY_WIDTH) else 0
+                    val videoHeight = if (cropBottom > cropTop) cropBottom - cropTop + 1
+                        else if (newFormat.containsKey(MediaFormat.KEY_HEIGHT)) newFormat.getInteger(MediaFormat.KEY_HEIGHT) else 0
+
                     if (videoWidth > 0 && videoHeight > 0) {
                         runOnUiThread {
                             adjustSurfaceAspectRatio(videoWidth, videoHeight)
@@ -452,8 +480,14 @@ class ReceiverActivity : Activity() {
             } catch (e: Exception) {
                 if (isDecoding) {
                     Log.e(TAG, "Error draining MediaCodec: ${e.message}")
+                    try {
+                        Thread.sleep(10)
+                    } catch (_: InterruptedException) {
+                        break
+                    }
+                } else {
+                    break
                 }
-                break
             }
         }
     }

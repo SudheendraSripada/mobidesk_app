@@ -310,4 +310,61 @@ class UsbHostReceiverTest {
         // Must not throw UninitializedPropertyAccessException or any exception when views are uninitialized
         activity.adjustSurfaceAspectRatio(720, 1280)
     }
+
+    @Test
+    fun testScreenCaptureServiceConstants() {
+        assertEquals(720, ScreenCaptureService.DEFAULT_WIDTH)
+        assertEquals(1280, ScreenCaptureService.DEFAULT_HEIGHT)
+        assertEquals(30, ScreenCaptureService.DEFAULT_FRAME_RATE)
+        assertEquals(4_000_000, ScreenCaptureService.DEFAULT_BIT_RATE)
+        assertEquals(1, ScreenCaptureService.DEFAULT_I_FRAME_INTERVAL)
+        assertEquals("com.mobidesk.action.START", ScreenCaptureService.ACTION_START)
+        assertEquals("com.mobidesk.action.STOP", ScreenCaptureService.ACTION_STOP)
+    }
+
+    @Test
+    fun testConfigFramePrecedingVideoFrameDemuxing() {
+        val receivedFrames = mutableListOf<Quadruple<Byte, Byte, Long, ByteArray>>()
+        val demuxer = FramingDemuxer { type, flags, ptsUs, payload ->
+            receivedFrames.add(Quadruple(type, flags, ptsUs, payload))
+        }
+
+        val spsPpsConfig = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x67.toByte(), 0x42.toByte(), 0x00, 0x1E.toByte())
+        val keyframePayload = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x65.toByte(), 0x88.toByte(), 0x84.toByte())
+
+        val stream = ByteArrayOutputStream()
+        FramingProtocol.writeFrame(
+            stream,
+            FramingProtocol.TYPE_CONFIG,
+            FramingProtocol.FLAG_KEYFRAME,
+            spsPpsConfig,
+            0,
+            spsPpsConfig.size,
+            0L
+        )
+        FramingProtocol.writeFrame(
+            stream,
+            FramingProtocol.TYPE_FRAME,
+            FramingProtocol.FLAG_KEYFRAME,
+            keyframePayload,
+            0,
+            keyframePayload.size,
+            12345L
+        )
+
+        val bytes = stream.toByteArray()
+        demuxer.feedData(bytes, 0, bytes.size)
+
+        assertEquals(2, receivedFrames.size)
+        // First packet MUST be config (SPS/PPS)
+        assertEquals(FramingProtocol.TYPE_CONFIG, receivedFrames[0].first)
+        assertEquals(FramingProtocol.FLAG_KEYFRAME, receivedFrames[0].second)
+        assertArrayEquals(spsPpsConfig, receivedFrames[0].fourth)
+
+        // Second packet MUST be video frame (IDR sync frame)
+        assertEquals(FramingProtocol.TYPE_FRAME, receivedFrames[1].first)
+        assertEquals(FramingProtocol.FLAG_KEYFRAME, receivedFrames[1].second)
+        assertEquals(12345L, receivedFrames[1].third)
+        assertArrayEquals(keyframePayload, receivedFrames[1].fourth)
+    }
 }

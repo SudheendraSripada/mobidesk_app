@@ -390,4 +390,16 @@ class UsbHostReceiverTest {
         val empty = ByteArray(0)
         assertFalse("Empty payload must return false", activity.hasSpsPrefix(empty))
     }
+
+    @Test
+    fun testFramingProtocolTypeSleep() {
+        assertEquals(4.toByte(), FramingProtocol.TYPE_SLEEP)
+        val header = FramingProtocol.createHeader(FramingProtocol.TYPE_SLEEP, FramingProtocol.FLAG_NONE, 1, 0L)
+        assertEquals(FramingProtocol.TYPE_SLEEP, header[2])
+    }
+
+    @Test
+    fun testReceiverActivityInactivityWatchdogConstant() {
+        assertEquals(3500L, ReceiverActivity.INACTIVITY_WATCHDOG_TIMEOUT_MS)
+    }
 }

@@ -4,8 +4,10 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -29,8 +31,9 @@ import kotlin.concurrent.thread
  * Android Foreground Service managing Phone A (Sender):
  * - Maintains a persistent Partial WakeLock to prevent CPU throttling during continuous streaming.
  * - Manages MediaProjection session conforming to Android 14 requirements.
- * - Encodes screen frames using hardware MediaCodec (video/avc H.264 Annex-B NAL units, low-latency CBR).
- * - Packets data with binary framing header (Magic 0x4D42, type, payload length, PTS).
+ * - Encodes screen frames using hardware MediaCodec (video/avc H.264 Annex-B NAL units, real-time CBR).
+ * - Implements zero-buffering architecture via UsbAccessorySender.
+ * - Monitors screen sleep/wake state and dispatches sleep control packets to Phone B.
  * - Streams binary frames over UsbAccessory FileOutputStream via AoaAccessoryManager.
  */
 class ScreenCaptureService : Service() {
@@ -68,6 +71,7 @@ class ScreenCaptureService : Service() {
     private var mediaCodec: MediaCodec? = null
     private var inputSurface: Surface? = null
     private var aoaAccessoryManager: AoaAccessoryManager? = null
+    private var screenStateReceiver: BroadcastReceiver? = null
 
     @Volatile
     private var cachedCodecConfig: ByteArray? = null
@@ -185,7 +189,7 @@ class ScreenCaptureService : Service() {
                 requestSyncFrame()
             }
             onAccessoryDisconnected = {
-                Log.i(TAG, "USB Accessory disconnected from Host.")
+                Log.i(TAG, "USB Accessory disconnected from Host. Screen capture remains active.")
             }
             onKeyframeRequested = {
                 Log.i(TAG, "Host requested keyframe via AOA channel.")
@@ -198,7 +202,10 @@ class ScreenCaptureService : Service() {
         accessoryMgr.start()
         aoaAccessoryManager = accessoryMgr
 
-        // 7. Initialize MediaCodec video encoder for MIME type video/avc (H.264) with low-latency CBR
+        // 7. Register broadcast receiver for Screen OFF / Screen ON to notify Phone B of sleep state
+        registerScreenStateReceiver()
+
+        // 8. Initialize MediaCodec video encoder for MIME type video/avc (H.264) with strictly real-time low latency
         try {
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
                 setInteger(
@@ -217,24 +224,38 @@ class ScreenCaptureService : Service() {
                     )
                 } catch (e: Exception) {
                     Log.w(TAG, "CBR mode not supported, falling back to VBR: ${e.message}")
-                    setInteger(
-                        MediaFormat.KEY_BITRATE_MODE,
-                        MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
-                    )
+                    try {
+                        setInteger(
+                            MediaFormat.KEY_BITRATE_MODE,
+                            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+                        )
+                    } catch (_: Exception) {}
                 }
 
-                // Realtime low-latency priority
-                setInteger(MediaFormat.KEY_PRIORITY, 0)
+                // Real-time low latency and real-time priority (API 26+)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    try {
+                        setInteger(MediaFormat.KEY_LATENCY, 0)
+                    } catch (_: Exception) {}
+                    try {
+                        setInteger(MediaFormat.KEY_PRIORITY, 0)
+                    } catch (_: Exception) {}
+                } else {
+                    try {
+                        setInteger(MediaFormat.KEY_PRIORITY, 0)
+                    } catch (_: Exception) {}
+                }
+
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     try {
                         setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
                     } catch (_: Exception) {}
                 }
 
-                // Repeat previous frame on static screen for continuous smooth output (100ms)
+                // Repeat static frames every 50ms for smooth live output
                 setLong(
                     MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER,
-                    100000L
+                    50_000L
                 )
             }
 
@@ -252,7 +273,7 @@ class ScreenCaptureService : Service() {
                 return
             }
 
-            // 8. Create VirtualDisplay directing screen frames to MediaCodec input surface
+            // 9. Create VirtualDisplay directing screen frames to MediaCodec input surface
             virtualDisplay = projection.createVirtualDisplay(
                 "MobiDeskCapture",
                 width,
@@ -276,7 +297,7 @@ class ScreenCaptureService : Service() {
                 requestSyncFrame()
             }
 
-            // 9. In background thread, drain encoded NAL units and stream with binary framing header
+            // 10. In background thread, drain encoded NAL units and stream with zero-queue architecture
             drainThread = thread(name = "ScreenCaptureDrainThread") {
                 drainCodec()
             }
@@ -286,6 +307,44 @@ class ScreenCaptureService : Service() {
             Log.e(TAG, "Failed to initialize MediaCodec or VirtualDisplay: ${e.message}", e)
             handleStop()
         }
+    }
+
+    private fun registerScreenStateReceiver() {
+        if (screenStateReceiver != null) return
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    Intent.ACTION_SCREEN_OFF -> {
+                        Log.i(TAG, "Device screen turned OFF. Notifying receiver of sleep state...")
+                        aoaAccessoryManager?.sendSleepState(true)
+                    }
+                    Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
+                        Log.i(TAG, "Device screen turned ON. Notifying receiver of wake state...")
+                        aoaAccessoryManager?.sendSleepState(false)
+                        requestSyncFrame()
+                    }
+                }
+            }
+        }
+        registerReceiver(receiver, filter)
+        screenStateReceiver = receiver
+        Log.i(TAG, "Screen state broadcast receiver registered.")
+    }
+
+    private fun unregisterScreenStateReceiver() {
+        screenStateReceiver?.let {
+            try {
+                unregisterReceiver(it)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error unregistering screen state receiver: ${e.message}")
+            }
+        }
+        screenStateReceiver = null
     }
 
     /**
@@ -309,8 +368,8 @@ class ScreenCaptureService : Service() {
     }
 
     /**
-     * Reads encoded H.264 Annex-B NAL units, applies binary framing header,
-     * and streams directly over UsbAccessory FileOutputStream.
+     * Reads encoded H.264 Annex-B NAL units and delegates zero-queue transmission
+     * to AoaAccessoryManager / UsbAccessorySender.
      */
     private fun drainCodec() {
         val codec = mediaCodec ?: return
@@ -344,14 +403,27 @@ class ScreenCaptureService : Service() {
                                     aoaAccessoryManager?.sendConfig(extracted)
                                 }
                             }
+
                             val flags = if (isKeyframe) FramingProtocol.FLAG_KEYFRAME else FramingProtocol.FLAG_NONE
+
+                            // Ensure keyframe has SPS/PPS prepended in-band if not already present
+                            val finalPayload = if (isKeyframe && cachedCodecConfig != null && !hasSpsPrefix(packet)) {
+                                val cfg = cachedCodecConfig!!
+                                val combined = ByteArray(cfg.size + packet.size)
+                                System.arraycopy(cfg, 0, combined, 0, cfg.size)
+                                System.arraycopy(packet, 0, combined, cfg.size, packet.size)
+                                combined
+                            } else {
+                                packet
+                            }
+
                             aoaAccessoryManager?.sendFrame(
                                 FramingProtocol.TYPE_FRAME,
                                 flags,
                                 bufferInfo.presentationTimeUs,
-                                packet,
+                                finalPayload,
                                 0,
-                                packet.size
+                                finalPayload.size
                             )
                         }
                     }
@@ -390,6 +462,19 @@ class ScreenCaptureService : Service() {
             Log.e(TAG, "Drainage thread terminated unexpectedly, stopping service.")
             handleStop()
         }
+    }
+
+    private fun hasSpsPrefix(data: ByteArray): Boolean {
+        if (data.size < 5) return false
+        if (data[0] == 0.toByte() && data[1] == 0.toByte() && data[2] == 0.toByte() && data[3] == 1.toByte()) {
+            val nalType = data[4].toInt() and 0x1F
+            return nalType == 7
+        }
+        if (data[0] == 0.toByte() && data[1] == 0.toByte() && data[2] == 1.toByte()) {
+            val nalType = data[3].toInt() and 0x1F
+            return nalType == 7
+        }
+        return false
     }
 
     private fun extractAnnexBNal(buffer: ByteBuffer): ByteArray {
@@ -479,6 +564,8 @@ class ScreenCaptureService : Service() {
         Log.i(TAG, "Stopping ScreenCaptureService...")
         isStreaming = false
         isServiceRunning = false
+
+        unregisterScreenStateReceiver()
 
         try {
             drainThread?.join(1000)

@@ -24,6 +24,7 @@ object FramingProtocol {
     const val TYPE_CONFIG: Byte = 1
     const val TYPE_FRAME: Byte = 2
     const val TYPE_HEARTBEAT: Byte = 3
+    const val TYPE_SLEEP: Byte = 4
 
     const val FLAG_NONE: Byte = 0x00
     const val FLAG_KEYFRAME: Byte = 0x01

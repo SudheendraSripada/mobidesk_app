@@ -11,6 +11,8 @@ import android.media.MediaCodec
 import android.media.MediaFormat
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -32,10 +34,13 @@ import kotlin.concurrent.thread
 /**
  * Native full-screen Activity on Phone B (Receiver / Simulated Dock).
  *
- * Implements safe lifecycle handling:
- * 1. Wraps all setup in onCreate() inside a try-catch block. On error, displays a Toast and finish()es gracefully.
+ * Implements safe lifecycle handling and low-latency decoding:
+ * 1. Opaque solid black window and hardware SurfaceView to eliminate transparency bugs across OEM devices.
  * 2. Manages UsbHostReceiver with isolated background handshake and runtime permissions.
- * 3. Only initializes MediaCodec decoder and binds Surface once the Bulk IN endpoint is successfully opened and verified.
+ * 3. Low-latency MediaCodec decoder configuration (KEY_LOW_LATENCY = 1, KEY_PRIORITY = 0, flush on start).
+ * 4. Zero-queue frame feeding: drops non-IDR frames when input queue is saturated to eliminate buffer bloat.
+ * 5. Instant rendering on arrival via releaseOutputBuffer(index, true).
+ * 6. Sleep state overlay: displays "phone in sleep wake up to view" when Phone A screen is off.
  */
 class ReceiverActivity : Activity() {
 
@@ -46,6 +51,7 @@ class ReceiverActivity : Activity() {
         private const val TIMEOUT_USEC = 10_000L
         private const val DEFAULT_DECODER_WIDTH = 720
         private const val DEFAULT_DECODER_HEIGHT = 1280
+        const val INACTIVITY_WATCHDOG_TIMEOUT_MS = 3500L
     }
 
     private lateinit var rootLayout: FrameLayout
@@ -53,6 +59,10 @@ class ReceiverActivity : Activity() {
     private lateinit var statusOverlay: FrameLayout
     private lateinit var statusTextView: TextView
     private lateinit var progressBar: ProgressBar
+
+    // Dedicated overlay for sleep / screen-off state
+    private lateinit var sleepOverlay: FrameLayout
+    private lateinit var sleepTextView: TextView
 
     private var mediaCodec: MediaCodec? = null
     private var usbHostReceiver: UsbHostReceiver? = null
@@ -68,23 +78,29 @@ class ReceiverActivity : Activity() {
     @Volatile
     private var cachedConfigPacket: ByteArray? = null
 
+    @Volatile
+    private var isPhoneSleeping = false
+
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var inactivityWatchdogRunnable: Runnable? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         try {
-            // Keep screen awake and ensure window background is completely transparent
+            // Keep screen awake with solid black window background for clean video decoding
             window?.apply {
-                setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+                setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.BLACK))
                 addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             }
 
-            // Create UI layout programmatically: SurfaceView with a transparent status overlay on top
+            // Create UI layout programmatically: SurfaceView with overlays on top
             rootLayout = FrameLayout(this).apply {
-                setBackgroundColor(Color.TRANSPARENT)
+                setBackgroundColor(Color.BLACK)
             }
 
             surfaceView = SurfaceView(this).apply {
-                setZOrderMediaOverlay(true)
-                holder.setFormat(PixelFormat.TRANSLUCENT)
+                setZOrderMediaOverlay(false)
+                holder.setFormat(PixelFormat.OPAQUE)
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -95,7 +111,7 @@ class ReceiverActivity : Activity() {
 
             // Status overlay showing USB handshake and connection status
             statusOverlay = FrameLayout(this).apply {
-                setBackgroundColor(Color.TRANSPARENT)
+                setBackgroundColor(Color.parseColor("#E6000000"))
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
@@ -127,13 +143,53 @@ class ReceiverActivity : Activity() {
                 text = "Connecting to USB AOA Host..."
             }
             overlayContent.addView(statusTextView)
-
             statusOverlay.addView(overlayContent)
             rootLayout.addView(statusOverlay)
 
+            // Sleep overlay: displayed when Phone A screen turns off or sleeps
+            sleepOverlay = FrameLayout(this).apply {
+                setBackgroundColor(Color.parseColor("#F0000000")) // 94% black overlay
+                visibility = View.GONE
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            }
+
+            val sleepContent = android.widget.LinearLayout(this).apply {
+                orientation = android.widget.LinearLayout.VERTICAL
+                gravity = Gravity.CENTER
+                setBackgroundColor(Color.TRANSPARENT)
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
+                )
+            }
+
+            val sleepIcon = TextView(this).apply {
+                text = "💤"
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 40f)
+                gravity = Gravity.CENTER
+                setPadding(0, 0, 0, 16)
+            }
+            sleepContent.addView(sleepIcon)
+
+            sleepTextView = TextView(this).apply {
+                setTextColor(Color.WHITE)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+                gravity = Gravity.CENTER
+                setBackgroundColor(Color.TRANSPARENT)
+                setPadding(32, 16, 32, 16)
+                text = "phone in sleep wake up to view"
+            }
+            sleepContent.addView(sleepTextView)
+            sleepOverlay.addView(sleepContent)
+            rootLayout.addView(sleepOverlay)
+
             setContentView(rootLayout)
 
-            // Enter native immersive full-screen mode (strictly after setContentView to ensure decor view is initialized)
+            // Enter native immersive full-screen mode
             applyFullScreen()
             window?.decorView?.post {
                 applyFullScreen()
@@ -163,10 +219,9 @@ class ReceiverActivity : Activity() {
                 }
             })
 
-            // Requirement 3: Start receiver pipeline safely inside onCreate try-catch
+            // Start receiver pipeline safely inside onCreate try-catch
             startReceiverPipeline()
         } catch (e: Exception) {
-            // Safe Lifecycle: Display an Android Toast on UI thread and finish() gracefully back to Flutter
             Log.e(TAG, "Safe Lifecycle: Unhandled error in onCreate: ${e.message}", e)
             runOnUiThread {
                 if (!isFinishing && !isDestroyed) {
@@ -215,7 +270,6 @@ class ReceiverActivity : Activity() {
                     controller.hide(WindowInsets.Type.statusBars() or WindowInsets.Type.navigationBars())
                     controller.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
                 } else {
-                    // Fallback to legacy systemUiVisibility if controller is not yet available before view attachment
                     @Suppress("DEPRECATION")
                     win.decorView.systemUiVisibility = (
                         View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
@@ -264,6 +318,8 @@ class ReceiverActivity : Activity() {
             Log.i(TAG, "First video frame detected. Hiding status overlay.")
             hideOverlay()
         }
+        handleSleepState(false)
+        resetInactivityWatchdog()
     }
 
     private fun hideOverlay() {
@@ -276,10 +332,33 @@ class ReceiverActivity : Activity() {
         }
     }
 
+    private fun handleSleepState(isSleep: Boolean) {
+        isPhoneSleeping = isSleep
+        runOnUiThread {
+            if (isFinishing || isDestroyed) return@runOnUiThread
+            if (::sleepOverlay.isInitialized) {
+                sleepOverlay.visibility = if (isSleep) View.VISIBLE else View.GONE
+            }
+        }
+    }
+
+    private fun resetInactivityWatchdog() {
+        inactivityWatchdogRunnable?.let { mainHandler.removeCallbacks(it) }
+        val receiver = usbHostReceiver
+        if (receiver != null && receiver.isConnected() && hasReceivedFirstFrame) {
+            val runnable = Runnable {
+                if (usbHostReceiver?.isConnected() == true && !isFinishing && !isDestroyed) {
+                    Log.i(TAG, "Frame inactivity detected; displaying sleep overlay.")
+                    handleSleepState(true)
+                }
+            }
+            inactivityWatchdogRunnable = runnable
+            mainHandler.postDelayed(runnable, INACTIVITY_WATCHDOG_TIMEOUT_MS)
+        }
+    }
+
     /**
      * Starts the USB receiver pipeline.
-     * Note: Does NOT initialize MediaCodec yet. MediaCodec is ONLY initialized once
-     * the Bulk IN endpoint is successfully opened and verified (Requirement 4).
      */
     private fun startReceiverPipeline() {
         stopReceiverPipeline()
@@ -292,10 +371,8 @@ class ReceiverActivity : Activity() {
                     feedDecoder(type, flags, ptsUs, payload)
                 }
             ).apply {
-                // Requirement 4: Only initialize the MediaCodec decoder and bind the Surface
-                // once the Bulk IN endpoint is successfully opened and verified.
                 onBulkInReady = { inEp ->
-                    Log.i(TAG, "Bulk IN endpoint verified (${inEp.address}); initializing MediaCodec decoder and binding Surface...")
+                    Log.i(TAG, "Bulk IN endpoint verified (${inEp.address}); initializing MediaCodec decoder...")
                     verifiedBulkInEndpoint = inEp
                     val surface = currentSurface
                     if (surface != null && surface.isValid) {
@@ -335,11 +412,14 @@ class ReceiverActivity : Activity() {
                     } else {
                         updateStatus("Connected! Streaming video...", false)
                     }
+                    resetInactivityWatchdog()
                 }
 
                 onDisconnected = {
                     hasReceivedFirstFrame = false
                     verifiedBulkInEndpoint = null
+                    inactivityWatchdogRunnable?.let { mainHandler.removeCallbacks(it) }
+                    handleSleepState(false)
                     stopDecoder()
                     updateStatus("USB Accessory disconnected. Reconnecting...", true)
                 }
@@ -359,8 +439,7 @@ class ReceiverActivity : Activity() {
     }
 
     /**
-     * Initializes MediaCodec hardware video/avc decoder and binds it to the Surface.
-     * Guaranteed to be called ONLY after Bulk IN endpoint is verified.
+     * Initializes MediaCodec hardware video/avc decoder with low-latency configuration.
      */
     @Synchronized
     private fun initMediaCodecDecoder(surface: Surface) {
@@ -391,10 +470,16 @@ class ReceiverActivity : Activity() {
             val codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             codec.configure(format, surface, null, 0)
             codec.start()
+
+            // Flush decoder on startup to discard any driver-stale frame state
+            try {
+                codec.flush()
+            } catch (_: Exception) {}
+
             codec.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT)
             mediaCodec = codec
             isDecoding = true
-            Log.i(TAG, "MediaCodec video/avc decoder successfully configured and bound to Surface.")
+            Log.i(TAG, "MediaCodec video/avc decoder successfully configured, flushed, and bound to Surface.")
 
             cachedConfigPacket?.let { config ->
                 feedDecoder(FramingProtocol.TYPE_CONFIG, FramingProtocol.FLAG_KEYFRAME, 0L, config)
@@ -431,11 +516,17 @@ class ReceiverActivity : Activity() {
     }
 
     /**
-     * Feeds incoming demuxed frames into MediaCodec input buffers.
+     * Feeds incoming demuxed frames into MediaCodec input buffers using zero-queue drop logic.
      */
     private fun feedDecoder(type: Byte, flags: Byte, ptsUs: Long, payload: ByteArray) {
         if (type == FramingProtocol.TYPE_HEARTBEAT) {
-            // Heartbeat packet, do not feed into video decoder
+            return
+        }
+
+        if (type == FramingProtocol.TYPE_SLEEP) {
+            val isSleep = payload.isNotEmpty() && payload[0] == 1.toByte()
+            Log.i(TAG, "Received sleep state packet: isSleep=$isSleep")
+            handleSleepState(isSleep)
             return
         }
 
@@ -454,47 +545,46 @@ class ReceiverActivity : Activity() {
         if (!isDecoding) return
 
         try {
-            var inputBufferIndex = -1
-            val maxRetries = if (type == FramingProtocol.TYPE_CONFIG) 10 else 3
-            var attempt = 0
-            while (isDecoding && inputBufferIndex < 0 && attempt < maxRetries) {
+            val isKeyframe = (flags.toInt() and FramingProtocol.FLAG_KEYFRAME.toInt()) != 0
+            val isConfig = type == FramingProtocol.TYPE_CONFIG
+
+            // Zero-Queue Architecture: Non-blocking dequeue of input buffer
+            var inputBufferIndex = codec.dequeueInputBuffer(0)
+            if (inputBufferIndex < 0) {
+                if (!isKeyframe && !isConfig) {
+                    // Decoder input queue is full: drop non-IDR frame immediately rather than buffering
+                    return
+                }
+                // For IDR sync / config frames, wait up to TIMEOUT_USEC to prevent keyframe drops
                 inputBufferIndex = codec.dequeueInputBuffer(TIMEOUT_USEC)
-                if (inputBufferIndex < 0) {
-                    attempt++
-                }
+                if (inputBufferIndex < 0) return
             }
 
-            if (inputBufferIndex >= 0) {
-                val inputBuffer = codec.getInputBuffer(inputBufferIndex) ?: return
-                inputBuffer.clear()
+            val inputBuffer = codec.getInputBuffer(inputBufferIndex) ?: return
+            inputBuffer.clear()
 
-                val isKeyframe = (flags.toInt() and FramingProtocol.FLAG_KEYFRAME.toInt()) != 0
-                val cachedConfig = cachedConfigPacket
+            val cachedConfig = cachedConfigPacket
 
-                // If keyframe and cachedConfig exists, ensure SPS/PPS is prepended if not already present
-                val finalPayload = if (type == FramingProtocol.TYPE_FRAME && isKeyframe && cachedConfig != null && !hasSpsPrefix(payload)) {
-                    val combined = ByteArray(cachedConfig.size + payload.size)
-                    System.arraycopy(cachedConfig, 0, combined, 0, cachedConfig.size)
-                    System.arraycopy(payload, 0, combined, cachedConfig.size, payload.size)
-                    combined
-                } else {
-                    payload
-                }
-
-                val toCopy = minOf(finalPayload.size, inputBuffer.remaining())
-                inputBuffer.put(finalPayload, 0, toCopy)
-
-                val bufferFlags = when (type) {
-                    FramingProtocol.TYPE_CONFIG -> MediaCodec.BUFFER_FLAG_CODEC_CONFIG
-                    else -> if (isKeyframe) {
-                        MediaCodec.BUFFER_FLAG_KEY_FRAME
-                    } else {
-                        0
-                    }
-                }
-
-                codec.queueInputBuffer(inputBufferIndex, 0, toCopy, ptsUs, bufferFlags)
+            // If keyframe and cachedConfig exists, ensure SPS/PPS is prepended if not already present
+            val finalPayload = if (type == FramingProtocol.TYPE_FRAME && isKeyframe && cachedConfig != null && !hasSpsPrefix(payload)) {
+                val combined = ByteArray(cachedConfig.size + payload.size)
+                System.arraycopy(cachedConfig, 0, combined, 0, cachedConfig.size)
+                System.arraycopy(payload, 0, combined, cachedConfig.size, payload.size)
+                combined
+            } else {
+                payload
             }
+
+            val toCopy = minOf(finalPayload.size, inputBuffer.remaining())
+            inputBuffer.put(finalPayload, 0, toCopy)
+
+            val bufferFlags = when {
+                isConfig -> MediaCodec.BUFFER_FLAG_CODEC_CONFIG
+                isKeyframe -> MediaCodec.BUFFER_FLAG_KEY_FRAME
+                else -> 0
+            }
+
+            codec.queueInputBuffer(inputBufferIndex, 0, toCopy, ptsUs, bufferFlags)
         } catch (e: Exception) {
             if (isDecoding) {
                 Log.e(TAG, "Error queuing buffer to MediaCodec: ${e.message}")
@@ -503,7 +593,7 @@ class ReceiverActivity : Activity() {
     }
 
     /**
-     * Continuously dequeues decoded frames and renders them to the SurfaceView.
+     * Continuously dequeues decoded frames and renders them immediately to the SurfaceView.
      */
     private fun drainDecoder() {
         val bufferInfo = MediaCodec.BufferInfo()
@@ -512,7 +602,7 @@ class ReceiverActivity : Activity() {
             try {
                 val outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, TIMEOUT_USEC)
                 if (outputBufferIndex >= 0) {
-                    // MUST be true to render directly onto the Surface
+                    // MUST be true to render directly onto the Surface immediately on arrival
                     codec.releaseOutputBuffer(outputBufferIndex, true)
                     onFirstFrameDetected()
                 } else if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
@@ -612,6 +702,9 @@ class ReceiverActivity : Activity() {
 
     @Synchronized
     private fun stopReceiverPipeline() {
+        inactivityWatchdogRunnable?.let { mainHandler.removeCallbacks(it) }
+        inactivityWatchdogRunnable = null
+        handleSleepState(false)
         stopDecoder()
 
         try {

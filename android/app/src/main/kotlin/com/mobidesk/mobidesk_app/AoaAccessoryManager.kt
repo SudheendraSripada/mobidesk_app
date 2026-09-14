@@ -17,8 +17,8 @@ import kotlin.concurrent.thread
 
 /**
  * Manages the USB Accessory connection on Phone A (Sender).
- * Opens the UsbAccessory via UsbManager, writes binary framed video packets
- * to the accessory FileOutputStream, and monitors accessory attach/detach events.
+ * Opens the UsbAccessory via UsbManager, delegates zero-queue frame transmission
+ * to UsbAccessorySender, and monitors accessory attach/detach events.
  */
 class AoaAccessoryManager(private val context: Context) {
 
@@ -33,6 +33,13 @@ class AoaAccessoryManager(private val context: Context) {
     private var outputStream: FileOutputStream? = null
     private var inputStream: FileInputStream? = null
 
+    // Zero-queue USB sender component
+    val sender = UsbAccessorySender().apply {
+        onDisconnected = {
+            closeAccessory()
+        }
+    }
+
     @Volatile
     var isConnected = false
         private set
@@ -45,9 +52,6 @@ class AoaAccessoryManager(private val context: Context) {
 
     @Volatile
     private var latestConfigHeader: ByteArray? = null
-
-    @Volatile
-    private var configSentToHost = false
 
     var onAccessoryConnected: (() -> Unit)? = null
     var onAccessoryDisconnected: (() -> Unit)? = null
@@ -64,7 +68,13 @@ class AoaAccessoryManager(private val context: Context) {
                         intent.getParcelableExtra(UsbManager.EXTRA_ACCESSORY)
                     }
                     Log.i(TAG, "USB Accessory attached: ${accessory?.description}")
-                    accessory?.let { openAccessory(it) }
+                    accessory?.let {
+                        if (usbManager.hasPermission(it)) {
+                            openAccessory(it)
+                        } else {
+                            requestAccessoryPermission(it)
+                        }
+                    }
                 }
                 UsbManager.ACTION_USB_ACCESSORY_DETACHED -> {
                     @Suppress("DEPRECATION")
@@ -129,26 +139,35 @@ class AoaAccessoryManager(private val context: Context) {
         if (usbManager.hasPermission(accessory)) {
             return openAccessory(accessory)
         } else {
-            Log.i(TAG, "Requesting permission for USB accessory...")
-            val flag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            } else {
-                PendingIntent.FLAG_UPDATE_CURRENT
-            }
-            val permissionIntent = PendingIntent.getBroadcast(
-                context,
-                0,
-                Intent(ACTION_USB_PERMISSION).setPackage(context.packageName),
-                flag
-            )
-            usbManager.requestPermission(accessory, permissionIntent)
-            return false
+            return requestAccessoryPermission(accessory)
         }
+    }
+
+    private fun requestAccessoryPermission(accessory: UsbAccessory): Boolean {
+        Log.i(TAG, "Requesting permission for USB accessory...")
+        val flag = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        } else {
+            PendingIntent.FLAG_UPDATE_CURRENT
+        }
+        val permissionIntent = PendingIntent.getBroadcast(
+            context,
+            0,
+            Intent(ACTION_USB_PERMISSION).setPackage(context.packageName),
+            flag
+        )
+        usbManager.requestPermission(accessory, permissionIntent)
+        return false
     }
 
     @Synchronized
     private fun openAccessory(accessory: UsbAccessory): Boolean {
         if (isConnected) return true
+
+        if (!usbManager.hasPermission(accessory)) {
+            requestAccessoryPermission(accessory)
+            return false
+        }
 
         try {
             val pfd = usbManager.openAccessory(accessory)
@@ -159,13 +178,18 @@ class AoaAccessoryManager(private val context: Context) {
 
             fileDescriptor = pfd
             val fd = pfd.fileDescriptor
-            outputStream = FileOutputStream(fd)
-            inputStream = FileInputStream(fd)
+            val out = FileOutputStream(fd)
+            val inStream = FileInputStream(fd)
+            outputStream = out
+            inputStream = inStream
             isConnected = true
             Log.i(TAG, "Successfully opened USB Accessory FileOutputStream and FileInputStream.")
 
-            // Send cached SPS/PPS config immediately upon connection if available
-            sendCachedConfigIfAvailable()
+            // Start zero-queue sender with active stream
+            latestConfigHeader?.let { config ->
+                sender.sendConfig(config)
+            }
+            sender.start(out)
 
             // Start background reader for host signals (e.g. keyframe requests)
             readThread = thread(name = "AoaAccessoryReadThread") {
@@ -184,28 +208,10 @@ class AoaAccessoryManager(private val context: Context) {
     /**
      * Sends the cached SPS/PPS configuration bytes as the very first packet to Phone B.
      */
-    @Synchronized
     fun sendCachedConfigIfAvailable(): Boolean {
         val config = latestConfigHeader ?: return false
-        val out = outputStream ?: return false
-        if (!isConnected) return false
-        return try {
-            FramingProtocol.writeFrame(
-                out,
-                FramingProtocol.TYPE_CONFIG,
-                FramingProtocol.FLAG_KEYFRAME,
-                config,
-                0,
-                config.size,
-                0L
-            )
-            configSentToHost = true
-            Log.i(TAG, "Sent cached SPS/PPS config frame (${config.size} bytes) to newly connected accessory host.")
-            true
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed sending cached config: ${e.message}")
-            false
-        }
+        sender.sendConfig(config)
+        return true
     }
 
     private fun listenHostSignals() {
@@ -237,26 +243,21 @@ class AoaAccessoryManager(private val context: Context) {
     /**
      * Send codec configuration (SPS / PPS) packet.
      */
-    @Synchronized
     fun sendConfig(configData: ByteArray) {
         latestConfigHeader = configData.copyOf()
-        if (isConnected) {
-            sendFrame(
-                FramingProtocol.TYPE_CONFIG,
-                FramingProtocol.FLAG_KEYFRAME,
-                0L,
-                configData,
-                0,
-                configData.size
-            )
-            configSentToHost = true
-        }
+        sender.sendConfig(configData)
     }
 
     /**
-     * Send video frame / NAL unit packet.
+     * Send sleep/wake state packet to host.
      */
-    @Synchronized
+    fun sendSleepState(isAsleep: Boolean) {
+        sender.sendSleepState(isAsleep)
+    }
+
+    /**
+     * Send video frame / NAL unit packet using zero-queue drop-tail architecture.
+     */
     fun sendFrame(
         type: Byte,
         flags: Byte,
@@ -265,42 +266,15 @@ class AoaAccessoryManager(private val context: Context) {
         offset: Int = 0,
         length: Int = payload.size
     ) {
-        val out = outputStream ?: return
-        if (!isConnected) return
-
-        try {
-            // Ensure cached config (SPS/PPS) is sent as the very first packet before any standard video frame
-            if (type != FramingProtocol.TYPE_CONFIG && !configSentToHost) {
-                latestConfigHeader?.let { config ->
-                    FramingProtocol.writeFrame(
-                        out,
-                        FramingProtocol.TYPE_CONFIG,
-                        FramingProtocol.FLAG_KEYFRAME,
-                        config,
-                        0,
-                        config.size,
-                        0L
-                    )
-                    configSentToHost = true
-                    Log.i(TAG, "Prepended cached SPS/PPS config frame (${config.size} bytes) before standard video frame.")
-                }
-            }
-
-            FramingProtocol.writeFrame(out, type, flags, payload, offset, length, ptsUs)
-            if (type == FramingProtocol.TYPE_CONFIG) {
-                configSentToHost = true
-            }
-        } catch (e: IOException) {
-            Log.w(TAG, "Error writing frame to USB accessory stream: ${e.message}")
-            closeAccessory()
-        }
+        sender.sendFrame(type, flags, ptsUs, payload, offset, length)
     }
 
     @Synchronized
     fun closeAccessory() {
         if (!isConnected && fileDescriptor == null) return
         isConnected = false
-        configSentToHost = false
+
+        sender.stop()
 
         try {
             outputStream?.close()
@@ -338,4 +312,3 @@ class AoaAccessoryManager(private val context: Context) {
         }
     }
 }
-

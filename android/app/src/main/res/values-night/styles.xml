@@ -16,10 +16,10 @@
         <item name="android:windowBackground">?android:colorBackground</item>
     </style>
 
-    <!-- Translucent theme for ReceiverActivity to ensure SurfaceView is never occluded by window background -->
+    <!-- Fullscreen theme for ReceiverActivity with solid black background for clean video decoding without translucency artifacts -->
     <style name="ReceiverTheme" parent="@android:style/Theme.NoTitleBar.Fullscreen">
-        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowBackground">@android:color/black</item>
         <item name="android:colorBackgroundCacheHint">@null</item>
-        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowIsTranslucent">false</item>
     </style>
 </resources>

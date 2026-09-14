@@ -483,8 +483,8 @@ class UsbHostReceiver(
                 throw IllegalStateException("AOA control handshake failed on ${currentDevice.deviceName}")
             }
 
-            // Wait for re-enumeration as accessory device
-            val deadline = System.currentTimeMillis() + 6000L
+            // Wait for re-enumeration as accessory device (up to 12s for slow OEM reboots)
+            val deadline = System.currentTimeMillis() + 12000L
             var foundAccessory = false
             while (isRunning && System.currentTimeMillis() < deadline) {
                 val list = manager.deviceList
@@ -633,6 +633,7 @@ class UsbHostReceiver(
      * Inspects device interfaces to find Bulk IN and optional Bulk OUT endpoints.
      */
     private fun findEndpoints(device: UsbDevice): Triple<UsbInterface, UsbEndpoint, UsbEndpoint?>? {
+        var fallback: Triple<UsbInterface, UsbEndpoint, UsbEndpoint?>? = null
         for (i in 0 until device.interfaceCount) {
             val iface = device.getInterface(i)
             var inEp: UsbEndpoint? = null
@@ -647,11 +648,13 @@ class UsbHostReceiver(
                     }
                 }
             }
-            if (inEp != null) {
+            if (inEp != null && outEp != null) {
                 return Triple(iface, inEp, outEp)
+            } else if (inEp != null && fallback == null) {
+                fallback = Triple(iface, inEp, outEp)
             }
         }
-        return null
+        return fallback
     }
 
     /**

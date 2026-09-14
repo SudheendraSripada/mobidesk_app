@@ -631,11 +631,16 @@ class UsbHostReceiver(
 
     /**
      * Inspects device interfaces to find Bulk IN and optional Bulk OUT endpoints.
+     * Prioritizes the true AOA Accessory interface and skips ADB interfaces (subclass 0x42, protocol 0x01).
      */
     private fun findEndpoints(device: UsbDevice): Triple<UsbInterface, UsbEndpoint, UsbEndpoint?>? {
+        var nonAdbBoth: Triple<UsbInterface, UsbEndpoint, UsbEndpoint?>? = null
+        var nonAdbInOnly: Triple<UsbInterface, UsbEndpoint, UsbEndpoint?>? = null
         var fallback: Triple<UsbInterface, UsbEndpoint, UsbEndpoint?>? = null
+
         for (i in 0 until device.interfaceCount) {
             val iface = device.getInterface(i)
+            val isAdb = (iface.interfaceSubclass == 0x42 && iface.interfaceProtocol == 0x01)
             var inEp: UsbEndpoint? = null
             var outEp: UsbEndpoint? = null
             for (j in 0 until iface.endpointCount) {
@@ -649,12 +654,20 @@ class UsbHostReceiver(
                 }
             }
             if (inEp != null && outEp != null) {
-                return Triple(iface, inEp, outEp)
-            } else if (inEp != null && fallback == null) {
-                fallback = Triple(iface, inEp, outEp)
+                if (!isAdb) {
+                    return Triple(iface, inEp, outEp)
+                } else if (fallback == null) {
+                    fallback = Triple(iface, inEp, outEp)
+                }
+            } else if (inEp != null) {
+                if (!isAdb && nonAdbInOnly == null) {
+                    nonAdbInOnly = Triple(iface, inEp, outEp)
+                } else if (fallback == null) {
+                    fallback = Triple(iface, inEp, outEp)
+                }
             }
         }
-        return fallback
+        return nonAdbBoth ?: nonAdbInOnly ?: fallback
     }
 
     /**

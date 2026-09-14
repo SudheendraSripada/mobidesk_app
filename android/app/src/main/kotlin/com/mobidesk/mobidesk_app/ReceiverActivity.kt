@@ -80,6 +80,8 @@ class ReceiverActivity : Activity() {
 
     @Volatile
     private var isPhoneSleeping = false
+    @Volatile
+    private var lastRenderedFrameTimeMs = 0L
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private var inactivityWatchdogRunnable: Runnable? = null
@@ -109,9 +111,9 @@ class ReceiverActivity : Activity() {
             }
             rootLayout.addView(surfaceView)
 
-            // Status overlay showing USB handshake and connection status
+            // Status overlay showing USB handshake and connection status with solid opaque black background
             statusOverlay = FrameLayout(this).apply {
-                setBackgroundColor(Color.parseColor("#E6000000"))
+                setBackgroundColor(Color.BLACK)
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT
@@ -146,9 +148,9 @@ class ReceiverActivity : Activity() {
             statusOverlay.addView(overlayContent)
             rootLayout.addView(statusOverlay)
 
-            // Sleep overlay: displayed when Phone A screen turns off or sleeps
+            // Sleep overlay: displayed when Phone A screen turns off or sleeps with solid black background
             sleepOverlay = FrameLayout(this).apply {
-                setBackgroundColor(Color.parseColor("#F0000000")) // 94% black overlay
+                setBackgroundColor(Color.BLACK)
                 visibility = View.GONE
                 layoutParams = FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT,
@@ -315,11 +317,12 @@ class ReceiverActivity : Activity() {
     private fun onFirstFrameDetected() {
         if (!hasReceivedFirstFrame) {
             hasReceivedFirstFrame = true
-            Log.i(TAG, "First video frame detected. Hiding status overlay.")
+            Log.i(TAG, "First video frame rendered. Hiding status overlay.")
             hideOverlay()
         }
-        handleSleepState(false)
-        resetInactivityWatchdog()
+        if (isPhoneSleeping) {
+            handleSleepState(false)
+        }
     }
 
     private fun hideOverlay() {
@@ -333,6 +336,7 @@ class ReceiverActivity : Activity() {
     }
 
     private fun handleSleepState(isSleep: Boolean) {
+        if (isPhoneSleeping == isSleep) return
         isPhoneSleeping = isSleep
         runOnUiThread {
             if (isFinishing || isDestroyed) return@runOnUiThread
@@ -342,19 +346,26 @@ class ReceiverActivity : Activity() {
         }
     }
 
-    private fun resetInactivityWatchdog() {
-        inactivityWatchdogRunnable?.let { mainHandler.removeCallbacks(it) }
-        val receiver = usbHostReceiver
-        if (receiver != null && receiver.isConnected() && hasReceivedFirstFrame) {
-            val runnable = Runnable {
-                if (usbHostReceiver?.isConnected() == true && !isFinishing && !isDestroyed) {
-                    Log.i(TAG, "Frame inactivity detected; displaying sleep overlay.")
-                    handleSleepState(true)
+    private fun startInactivityWatchdog() {
+        stopInactivityWatchdog()
+        val watchdog = object : Runnable {
+            override fun run() {
+                if (!isFinishing && !isDestroyed && isDecoding && hasReceivedFirstFrame) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastRenderedFrameTimeMs > INACTIVITY_WATCHDOG_TIMEOUT_MS) {
+                        handleSleepState(true)
+                    }
                 }
+                mainHandler.postDelayed(this, 1000L)
             }
-            inactivityWatchdogRunnable = runnable
-            mainHandler.postDelayed(runnable, INACTIVITY_WATCHDOG_TIMEOUT_MS)
         }
+        inactivityWatchdogRunnable = watchdog
+        mainHandler.postDelayed(watchdog, 1000L)
+    }
+
+    private fun stopInactivityWatchdog() {
+        inactivityWatchdogRunnable?.let { mainHandler.removeCallbacks(it) }
+        inactivityWatchdogRunnable = null
     }
 
     /**
@@ -412,13 +423,12 @@ class ReceiverActivity : Activity() {
                     } else {
                         updateStatus("Connected! Streaming video...", false)
                     }
-                    resetInactivityWatchdog()
                 }
 
                 onDisconnected = {
                     hasReceivedFirstFrame = false
                     verifiedBulkInEndpoint = null
-                    inactivityWatchdogRunnable?.let { mainHandler.removeCallbacks(it) }
+                    stopInactivityWatchdog()
                     handleSleepState(false)
                     stopDecoder()
                     updateStatus("USB Accessory disconnected. Reconnecting...", true)
@@ -427,6 +437,7 @@ class ReceiverActivity : Activity() {
 
             usbHostReceiver = receiver
             receiver.start()
+            startInactivityWatchdog()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start UsbHostReceiver: ${e.message}", e)
             runOnUiThread {
@@ -461,9 +472,6 @@ class ReceiverActivity : Activity() {
                     try {
                         setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
                     } catch (_: Exception) {}
-                }
-                cachedConfigPacket?.let { config ->
-                    setByteBuffer("csd-0", ByteBuffer.wrap(config))
                 }
             }
 
@@ -536,9 +544,10 @@ class ReceiverActivity : Activity() {
             Log.i(TAG, "Cached SPS/PPS codec config packet (${payload.size} bytes)")
         }
 
-        // Hide overlay as soon as first video frame or config packet is received
-        if (type == FramingProtocol.TYPE_FRAME || type == FramingProtocol.TYPE_CONFIG) {
-            onFirstFrameDetected()
+        if (type == FramingProtocol.TYPE_FRAME) {
+            if (isPhoneSleeping) {
+                handleSleepState(false)
+            }
         }
 
         val codec = mediaCodec ?: return
@@ -555,9 +564,16 @@ class ReceiverActivity : Activity() {
                     // Decoder input queue is full: drop non-IDR frame immediately rather than buffering
                     return
                 }
-                // For IDR sync / config frames, wait up to TIMEOUT_USEC to prevent keyframe drops
-                inputBufferIndex = codec.dequeueInputBuffer(TIMEOUT_USEC)
-                if (inputBufferIndex < 0) return
+                // For IDR sync / config frames, retry up to 5 times (20ms each) to prevent keyframe drops on slower chipsets
+                var retries = 0
+                while (isDecoding && inputBufferIndex < 0 && retries < 5) {
+                    inputBufferIndex = codec.dequeueInputBuffer(20_000L)
+                    retries++
+                }
+                if (inputBufferIndex < 0) {
+                    Log.w(TAG, "Decoder input queue full: dropped keyframe/config after retries")
+                    return
+                }
             }
 
             val inputBuffer = codec.getInputBuffer(inputBufferIndex) ?: return
@@ -576,6 +592,9 @@ class ReceiverActivity : Activity() {
             }
 
             val toCopy = minOf(finalPayload.size, inputBuffer.remaining())
+            if (toCopy < finalPayload.size) {
+                Log.w(TAG, "Payload size (${finalPayload.size}) exceeds inputBuffer capacity (${inputBuffer.remaining()})")
+            }
             inputBuffer.put(finalPayload, 0, toCopy)
 
             val bufferFlags = when {
@@ -604,6 +623,7 @@ class ReceiverActivity : Activity() {
                 if (outputBufferIndex >= 0) {
                     // MUST be true to render directly onto the Surface immediately on arrival
                     codec.releaseOutputBuffer(outputBufferIndex, true)
+                    lastRenderedFrameTimeMs = System.currentTimeMillis()
                     onFirstFrameDetected()
                 } else if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     val newFormat = codec.outputFormat
@@ -702,8 +722,7 @@ class ReceiverActivity : Activity() {
 
     @Synchronized
     private fun stopReceiverPipeline() {
-        inactivityWatchdogRunnable?.let { mainHandler.removeCallbacks(it) }
-        inactivityWatchdogRunnable = null
+        stopInactivityWatchdog()
         handleSleepState(false)
         stopDecoder()
 

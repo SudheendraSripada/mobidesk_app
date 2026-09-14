@@ -50,8 +50,14 @@ class UsbAccessorySender {
         private set
 
     @Volatile
+    var cachedKeyframe: FramePacket? = null
+        private set
+
+    @Volatile
     var configSent: Boolean = false
         private set
+
+    private val configQueued = AtomicBoolean(false)
 
     var onDisconnected: (() -> Unit)? = null
 
@@ -66,12 +72,18 @@ class UsbAccessorySender {
         outputStream = stream
         isRunning.set(true)
         configSent = false
+        configQueued.set(false)
         pendingVideoFrame.set(null)
         criticalQueue.clear()
 
         // Send cached SPS/PPS immediately as the very first packet of the session
         cachedConfig?.let { config ->
             sendConfig(config)
+        }
+
+        // Preload cached keyframe if available for instant live mirror on plug-in/reconnect
+        cachedKeyframe?.let { kf ->
+            pendingVideoFrame.set(kf)
         }
 
         writeThread = thread(name = "UsbAccessoryWriteThread") {
@@ -104,6 +116,7 @@ class UsbAccessorySender {
         pendingVideoFrame.set(null)
         criticalQueue.clear()
         configSent = false
+        configQueued.set(false)
         Log.i(TAG, "UsbAccessorySender stopped.")
     }
 
@@ -124,6 +137,7 @@ class UsbAccessorySender {
             payload = configData.copyOf()
         )
         criticalQueue.add(packet)
+        configQueued.set(true)
         writeLock.lock()
         try {
             writeCondition.signal()
@@ -194,7 +208,7 @@ class UsbAccessorySender {
         }
 
         // Ensure SPS/PPS is queued before standard video frames if not yet sent
-        if (!configSent) {
+        if (!configSent && configQueued.compareAndSet(false, true)) {
             cachedConfig?.let { config ->
                 criticalQueue.add(
                     FramePacket(
@@ -209,10 +223,24 @@ class UsbAccessorySender {
 
         if (isKeyframe) {
             // Keyframe takes immediate precedence: replace any pending frame
+            // and cache it for instant delivery to reconnecting clients
+            cachedKeyframe = packet
             pendingVideoFrame.set(packet)
         } else {
-            // Non-keyframe: If a frame is already pending, overwrite it (dropping stale frame)
-            pendingVideoFrame.set(packet)
+            // Non-keyframe (P-frame): Zero-queue drop logic.
+            // If the pending slot is already occupied by a critical KEYFRAME, DROP THIS NON-KEYFRAME
+            // to protect the keyframe from being lost!
+            // If the pending slot is empty or has a non-keyframe, replace it (dropping stale non-keyframe).
+            while (true) {
+                val current = pendingVideoFrame.get()
+                if (current != null && (current.flags.toInt() and FramingProtocol.FLAG_KEYFRAME.toInt()) != 0) {
+                    // Critical keyframe pending; drop this non-keyframe
+                    return
+                }
+                if (pendingVideoFrame.compareAndSet(current, packet)) {
+                    break
+                }
+            }
         }
 
         writeLock.lock()

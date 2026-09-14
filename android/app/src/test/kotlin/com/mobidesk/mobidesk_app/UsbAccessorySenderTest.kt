@@ -172,6 +172,84 @@ class UsbAccessorySenderTest {
     }
 
     @Test
+    fun testUsbAccessorySenderPendingKeyframeNotOverwrittenByNonKeyframe() {
+        val sender = UsbAccessorySender()
+        val blockingStream = object : ByteArrayOutputStream() {
+            var block = true
+            override fun write(b: ByteArray, off: Int, len: Int) {
+                if (block) Thread.sleep(150)
+                super.write(b, off, len)
+            }
+        }
+        val receivedFrames = mutableListOf<Quadruple<Byte, Byte, Long, ByteArray>>()
+        val demuxer = FramingDemuxer { type, flags, ptsUs, payload ->
+            receivedFrames.add(Quadruple(type, flags, ptsUs, payload))
+        }
+
+        sender.start(blockingStream)
+
+        // Enqueue critical keyframe first
+        val keyframePayload = byteArrayOf(42, 43, 44)
+        sender.sendFrame(FramingProtocol.TYPE_FRAME, FramingProtocol.FLAG_KEYFRAME, 1000L, keyframePayload)
+
+        // Immediately enqueue non-keyframe (P-frame) while write loop is delayed
+        val pFramePayload = byteArrayOf(99, 99)
+        sender.sendFrame(FramingProtocol.TYPE_FRAME, FramingProtocol.FLAG_NONE, 2000L, pFramePayload)
+
+        blockingStream.block = false
+        Thread.sleep(300)
+        sender.stop()
+
+        val writtenBytes = blockingStream.toByteArray()
+        demuxer.feedData(writtenBytes, 0, writtenBytes.size)
+
+        // The keyframe MUST be preserved and delivered; non-keyframe must NOT overwrite keyframe
+        assertTrue("At least one frame should be delivered", receivedFrames.isNotEmpty())
+        val deliveredVideoFrame = receivedFrames.firstOrNull { it.first == FramingProtocol.TYPE_FRAME }
+        org.junit.Assert.assertNotNull("A video frame must have been delivered", deliveredVideoFrame)
+        assertEquals(FramingProtocol.FLAG_KEYFRAME, deliveredVideoFrame!!.second)
+        assertArrayEquals(keyframePayload, deliveredVideoFrame.fourth)
+    }
+
+    @Test
+    fun testUsbAccessorySenderCachedKeyframePreloadedOnStart() {
+        val sender = UsbAccessorySender()
+        val stream1 = ByteArrayOutputStream()
+        sender.start(stream1)
+
+        val configPayload = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x67)
+        sender.sendConfig(configPayload)
+
+        val keyframePayload = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x65, 0x01, 0x02)
+        sender.sendFrame(FramingProtocol.TYPE_FRAME, FramingProtocol.FLAG_KEYFRAME, 100L, keyframePayload)
+        Thread.sleep(100)
+        sender.stop()
+
+        // Reconnect: Start new session with stream2
+        val stream2 = ByteArrayOutputStream()
+        val receivedFrames = mutableListOf<Quadruple<Byte, Byte, Long, ByteArray>>()
+        val demuxer = FramingDemuxer { type, flags, ptsUs, payload ->
+            receivedFrames.add(Quadruple(type, flags, ptsUs, payload))
+        }
+
+        sender.start(stream2)
+        Thread.sleep(150)
+        sender.stop()
+
+        val writtenBytes = stream2.toByteArray()
+        demuxer.feedData(writtenBytes, 0, writtenBytes.size)
+
+        // Stream 2 should immediately receive cached config followed by cached keyframe
+        assertEquals(2, receivedFrames.size)
+        assertEquals(FramingProtocol.TYPE_CONFIG, receivedFrames[0].first)
+        assertArrayEquals(configPayload, receivedFrames[0].fourth)
+
+        assertEquals(FramingProtocol.TYPE_FRAME, receivedFrames[1].first)
+        assertEquals(FramingProtocol.FLAG_KEYFRAME, receivedFrames[1].second)
+        assertArrayEquals(keyframePayload, receivedFrames[1].fourth)
+    }
+
+    @Test
     fun testUsbAccessorySenderOffsetAndLengthSlicing() {
         val sender = UsbAccessorySender()
         val out = ByteArrayOutputStream()

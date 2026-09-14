@@ -367,4 +367,27 @@ class UsbHostReceiverTest {
         assertEquals(12345L, receivedFrames[1].third)
         assertArrayEquals(keyframePayload, receivedFrames[1].fourth)
     }
+
+    @Test
+    fun testReceiverActivityHasSpsPrefix() {
+        val activity = ReceiverActivity()
+
+        val sps4Byte = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x67.toByte(), 0x42.toByte(), 0x00, 0x1E.toByte())
+        assertTrue("4-byte Annex-B SPS prefix should be recognized", activity.hasSpsPrefix(sps4Byte))
+
+        val sps3Byte = byteArrayOf(0x00, 0x00, 0x01, 0x67.toByte(), 0x42.toByte(), 0x00, 0x1E.toByte())
+        assertTrue("3-byte Annex-B SPS prefix should be recognized", activity.hasSpsPrefix(sps3Byte))
+
+        val idr4Byte = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x65.toByte(), 0x88.toByte(), 0x84.toByte())
+        assertFalse("IDR NAL (type 5) must not be recognized as SPS", activity.hasSpsPrefix(idr4Byte))
+
+        val pFrame = byteArrayOf(0x00, 0x00, 0x00, 0x01, 0x41.toByte(), 0x9A.toByte())
+        assertFalse("P-frame NAL (type 1) must not be recognized as SPS", activity.hasSpsPrefix(pFrame))
+
+        val tooShort = byteArrayOf(0x00, 0x00, 0x00, 0x01)
+        assertFalse("Too short payload must return false", activity.hasSpsPrefix(tooShort))
+
+        val empty = ByteArray(0)
+        assertFalse("Empty payload must return false", activity.hasSpsPrefix(empty))
+    }
 }

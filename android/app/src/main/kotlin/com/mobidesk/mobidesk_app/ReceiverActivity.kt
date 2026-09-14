@@ -26,6 +26,7 @@ import android.widget.FrameLayout
 import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
+import java.nio.ByteBuffer
 import kotlin.concurrent.thread
 
 /**
@@ -64,12 +65,17 @@ class ReceiverActivity : Activity() {
     private var isDecoding = false
     @Volatile
     private var hasReceivedFirstFrame = false
+    @Volatile
+    private var cachedConfigPacket: ByteArray? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         try {
-            // Keep screen awake while receiver is active
-            window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            // Keep screen awake and ensure window background is completely transparent
+            window?.apply {
+                setBackgroundDrawable(android.graphics.drawable.ColorDrawable(Color.TRANSPARENT))
+                addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            }
 
             // Create UI layout programmatically: SurfaceView with a transparent status overlay on top
             rootLayout = FrameLayout(this).apply {
@@ -116,6 +122,7 @@ class ReceiverActivity : Activity() {
                 setTextColor(Color.WHITE)
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
                 gravity = Gravity.CENTER
+                setBackgroundColor(Color.TRANSPARENT)
                 setPadding(32, 24, 32, 24)
                 text = "Connecting to USB AOA Host..."
             }
@@ -251,7 +258,16 @@ class ReceiverActivity : Activity() {
         }
     }
 
+    private fun onFirstFrameDetected() {
+        if (!hasReceivedFirstFrame) {
+            hasReceivedFirstFrame = true
+            Log.i(TAG, "First video frame detected. Hiding status overlay.")
+            hideOverlay()
+        }
+    }
+
     private fun hideOverlay() {
+        hasReceivedFirstFrame = true
         runOnUiThread {
             if (isFinishing || isDestroyed) return@runOnUiThread
             if (::statusOverlay.isInitialized) {
@@ -281,14 +297,20 @@ class ReceiverActivity : Activity() {
                 onBulkInReady = { inEp ->
                     Log.i(TAG, "Bulk IN endpoint verified (${inEp.address}); initializing MediaCodec decoder and binding Surface...")
                     verifiedBulkInEndpoint = inEp
-                    runOnUiThread {
-                        if (isFinishing || isDestroyed) return@runOnUiThread
-                        val surface = currentSurface
-                        if (surface != null && surface.isValid) {
-                            initMediaCodecDecoder(surface)
-                            usbHostReceiver?.requestKeyframeFromSender()
-                        } else {
-                            Log.w(TAG, "Surface is not yet ready when Bulk IN endpoint was verified")
+                    val surface = currentSurface
+                    if (surface != null && surface.isValid) {
+                        initMediaCodecDecoder(surface)
+                        usbHostReceiver?.requestKeyframeFromSender()
+                    } else {
+                        runOnUiThread {
+                            if (isFinishing || isDestroyed) return@runOnUiThread
+                            val surf = currentSurface
+                            if (surf != null && surf.isValid) {
+                                initMediaCodecDecoder(surf)
+                                usbHostReceiver?.requestKeyframeFromSender()
+                            } else {
+                                Log.w(TAG, "Surface is not yet ready when Bulk IN endpoint was verified")
+                            }
                         }
                     }
                 }
@@ -361,6 +383,9 @@ class ReceiverActivity : Activity() {
                         setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
                     } catch (_: Exception) {}
                 }
+                cachedConfigPacket?.let { config ->
+                    setByteBuffer("csd-0", ByteBuffer.wrap(config))
+                }
             }
 
             val codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
@@ -369,8 +394,11 @@ class ReceiverActivity : Activity() {
             codec.setVideoScalingMode(MediaCodec.VIDEO_SCALING_MODE_SCALE_TO_FIT)
             mediaCodec = codec
             isDecoding = true
-            hasReceivedFirstFrame = false
             Log.i(TAG, "MediaCodec video/avc decoder successfully configured and bound to Surface.")
+
+            cachedConfigPacket?.let { config ->
+                feedDecoder(FramingProtocol.TYPE_CONFIG, FramingProtocol.FLAG_KEYFRAME, 0L, config)
+            }
 
             drainThread = thread(name = "ReceiverDrainThread") {
                 drainDecoder()
@@ -387,6 +415,22 @@ class ReceiverActivity : Activity() {
     }
 
     /**
+     * Checks if the Annex-B payload starts with SPS (NAL type 7).
+     */
+    internal fun hasSpsPrefix(data: ByteArray): Boolean {
+        if (data.size < 5) return false
+        if (data[0] == 0.toByte() && data[1] == 0.toByte() && data[2] == 0.toByte() && data[3] == 1.toByte()) {
+            val nalType = data[4].toInt() and 0x1F
+            return nalType == 7
+        }
+        if (data[0] == 0.toByte() && data[1] == 0.toByte() && data[2] == 1.toByte()) {
+            val nalType = data[3].toInt() and 0x1F
+            return nalType == 7
+        }
+        return false
+    }
+
+    /**
      * Feeds incoming demuxed frames into MediaCodec input buffers.
      */
     private fun feedDecoder(type: Byte, flags: Byte, ptsUs: Long, payload: ByteArray) {
@@ -395,12 +439,15 @@ class ReceiverActivity : Activity() {
             return
         }
 
+        // Cache configuration bytes (SPS/PPS) immediately
+        if (type == FramingProtocol.TYPE_CONFIG) {
+            cachedConfigPacket = payload.copyOf()
+            Log.i(TAG, "Cached SPS/PPS codec config packet (${payload.size} bytes)")
+        }
+
         // Hide overlay as soon as first video frame or config packet is received
         if (type == FramingProtocol.TYPE_FRAME || type == FramingProtocol.TYPE_CONFIG) {
-            if (!hasReceivedFirstFrame) {
-                hasReceivedFirstFrame = true
-                hideOverlay()
-            }
+            onFirstFrameDetected()
         }
 
         val codec = mediaCodec ?: return
@@ -420,12 +467,26 @@ class ReceiverActivity : Activity() {
             if (inputBufferIndex >= 0) {
                 val inputBuffer = codec.getInputBuffer(inputBufferIndex) ?: return
                 inputBuffer.clear()
-                val toCopy = minOf(payload.size, inputBuffer.remaining())
-                inputBuffer.put(payload, 0, toCopy)
+
+                val isKeyframe = (flags.toInt() and FramingProtocol.FLAG_KEYFRAME.toInt()) != 0
+                val cachedConfig = cachedConfigPacket
+
+                // If keyframe and cachedConfig exists, ensure SPS/PPS is prepended if not already present
+                val finalPayload = if (type == FramingProtocol.TYPE_FRAME && isKeyframe && cachedConfig != null && !hasSpsPrefix(payload)) {
+                    val combined = ByteArray(cachedConfig.size + payload.size)
+                    System.arraycopy(cachedConfig, 0, combined, 0, cachedConfig.size)
+                    System.arraycopy(payload, 0, combined, cachedConfig.size, payload.size)
+                    combined
+                } else {
+                    payload
+                }
+
+                val toCopy = minOf(finalPayload.size, inputBuffer.remaining())
+                inputBuffer.put(finalPayload, 0, toCopy)
 
                 val bufferFlags = when (type) {
                     FramingProtocol.TYPE_CONFIG -> MediaCodec.BUFFER_FLAG_CODEC_CONFIG
-                    else -> if ((flags.toInt() and FramingProtocol.FLAG_KEYFRAME.toInt()) != 0) {
+                    else -> if (isKeyframe) {
                         MediaCodec.BUFFER_FLAG_KEY_FRAME
                     } else {
                         0
@@ -453,11 +514,7 @@ class ReceiverActivity : Activity() {
                 if (outputBufferIndex >= 0) {
                     // MUST be true to render directly onto the Surface
                     codec.releaseOutputBuffer(outputBufferIndex, true)
-
-                    if (!hasReceivedFirstFrame) {
-                        hasReceivedFirstFrame = true
-                        hideOverlay()
-                    }
+                    onFirstFrameDetected()
                 } else if (outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     val newFormat = codec.outputFormat
                     Log.i(TAG, "Decoder output format changed: $newFormat")

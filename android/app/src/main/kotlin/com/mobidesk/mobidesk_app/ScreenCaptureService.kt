@@ -335,7 +335,15 @@ class ScreenCaptureService : Service() {
                             // SPS / PPS configuration frame
                             cachedCodecConfig = packet.copyOf()
                             aoaAccessoryManager?.sendConfig(packet)
+                            requestSyncFrame()
                         } else {
+                            if (isKeyframe && cachedCodecConfig == null) {
+                                val extracted = extractSpsPpsFromBuffer(packet)
+                                if (extracted != null) {
+                                    cachedCodecConfig = extracted
+                                    aoaAccessoryManager?.sendConfig(extracted)
+                                }
+                            }
                             val flags = if (isKeyframe) FramingProtocol.FLAG_KEYFRAME else FramingProtocol.FLAG_NONE
                             aoaAccessoryManager?.sendFrame(
                                 FramingProtocol.TYPE_FRAME,
@@ -367,6 +375,7 @@ class ScreenCaptureService : Service() {
                         System.arraycopy(ppsBytes, 0, spsPps, spsBytes.size, ppsBytes.size)
                         cachedCodecConfig = spsPps
                         aoaAccessoryManager?.sendConfig(spsPps)
+                        requestSyncFrame()
                     }
                 }
             } catch (e: Exception) {
@@ -405,6 +414,33 @@ class ScreenCaptureService : Service() {
             buffer.get(bytes, 4, size)
             bytes
         }
+    }
+
+    private fun extractSpsPpsFromBuffer(data: ByteArray): ByteArray? {
+        var spsStart = -1
+        var ppsEnd = -1
+        var i = 0
+        while (i < data.size - 4) {
+            val isStart4 = data[i] == 0.toByte() && data[i + 1] == 0.toByte() && data[i + 2] == 0.toByte() && data[i + 3] == 1.toByte()
+            val isStart3 = data[i] == 0.toByte() && data[i + 1] == 0.toByte() && data[i + 2] == 1.toByte()
+            if (isStart4 || isStart3) {
+                val headerOffset = if (isStart4) i + 4 else i + 3
+                if (headerOffset < data.size) {
+                    val nalType = data[headerOffset].toInt() and 0x1F
+                    if (nalType == 7 && spsStart == -1) {
+                        spsStart = i
+                    } else if (nalType == 5 && spsStart != -1) {
+                        ppsEnd = i
+                        break
+                    }
+                }
+            }
+            i++
+        }
+        if (spsStart != -1 && ppsEnd > spsStart) {
+            return data.copyOfRange(spsStart, ppsEnd)
+        }
+        return null
     }
 
     private fun acquireWakeLock() {

@@ -379,6 +379,17 @@ class _MyHomePageState extends State<MyHomePage> with WidgetsBindingObserver {
                             icon: const Icon(Icons.stop_rounded),
                             label: const Text('Stop Sharing'),
                           ),
+                          const SizedBox(height: 8),
+                          FilledButton.icon(
+                            onPressed: () => _streamChannel.invokeMethod('activateDockScreenOff'),
+                            style: FilledButton.styleFrom(
+                              backgroundColor: Colors.black,
+                              foregroundColor: Colors.white,
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                            icon: const Icon(Icons.screen_lock_portrait_rounded),
+                            label: const Text('Turn Off Screen'),
+                          ),
                         ] else ...[
                           FilledButton.icon(
                             onPressed: _isLoading ? null : _startStream,

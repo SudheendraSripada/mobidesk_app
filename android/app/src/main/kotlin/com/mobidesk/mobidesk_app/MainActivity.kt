@@ -6,6 +6,9 @@ import android.content.Intent
 import android.hardware.usb.UsbManager
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.view.View
+import android.view.WindowManager
+import android.widget.FrameLayout
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -14,6 +17,47 @@ class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.mobidesk/stream"
     private val REQUEST_CODE_SCREEN_CAPTURE = 1002
     private var pendingResult: MethodChannel.Result? = null
+    private var blackOverlayView: FrameLayout? = null
+
+    override fun onResume() {
+        super.onResume()
+        if (blackOverlayView == null) {
+            blackOverlayView = FrameLayout(this).apply {
+                setBackgroundColor(android.graphics.Color.BLACK)
+                isClickable = true
+                isFocusable = true
+                visibility = View.GONE
+                setOnClickListener {
+                    deactivateDockScreenOff()
+                }
+            }
+            addContentView(blackOverlayView, android.view.ViewGroup.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT
+            ))
+        }
+    }
+
+    private fun activateDockScreenOff() {
+        // 1. Keep CPU and rendering engine running
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+        // 2. Dim backlight to 0 (completely black on OLED/AMOLED)
+        val layoutParams = window.attributes
+        layoutParams.screenBrightness = 0.0f
+        window.attributes = layoutParams
+
+        // 3. Set a full-screen black overlay View
+        blackOverlayView?.visibility = View.VISIBLE
+    }
+
+    private fun deactivateDockScreenOff() {
+        val layoutParams = window.attributes
+        layoutParams.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        window.attributes = layoutParams
+        blackOverlayView?.visibility = View.GONE
+        window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -72,6 +116,14 @@ class MainActivity : FlutterActivity() {
                     } catch (e: Exception) {
                         result.error("USB_STATUS_ERROR", "Failed to get USB status: ${e.message}", null)
                     }
+                }
+                "activateDockScreenOff" -> {
+                    activateDockScreenOff()
+                    result.success(true)
+                }
+                "deactivateDockScreenOff" -> {
+                    deactivateDockScreenOff()
+                    result.success(true)
                 }
                 else -> {
                     result.notImplemented()

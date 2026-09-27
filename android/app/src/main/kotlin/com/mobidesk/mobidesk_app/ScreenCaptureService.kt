@@ -212,18 +212,41 @@ class ScreenCaptureService : Service() {
                     MediaFormat.KEY_COLOR_FORMAT,
                     MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
                 )
-                setInteger(MediaFormat.KEY_BIT_RATE, DEFAULT_BIT_RATE)
+
+                // 1. Bitrate & Framerate
+                setInteger(MediaFormat.KEY_BIT_RATE, 8_000_000) // 8 Mbps for crisp desktop UI
                 setInteger(MediaFormat.KEY_FRAME_RATE, DEFAULT_FRAME_RATE)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, DEFAULT_I_FRAME_INTERVAL)
 
-                // Low-latency Constant Bit Rate (CBR)
+                // 2. ELIMINATE GHOSTING: Disable B-Frames completely
+                try {
+                    setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
+                    setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
+                } catch (_: Exception) {}
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    try {
+                        setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                    } catch (_: Exception) {}
+                }
+
+                // 3. FIX FFmpeg NAL ERRORS: Prepend SPS & PPS to every keyframe
+                // This stops the "Invalid NAL unit / non-existing PPS" decoder corruption permanently
+                try {
+                    setInteger(MediaFormat.KEY_PREPEND_HEADER_TO_SYNC_FRAMES, 1)
+                } catch (_: Exception) {
+                    try {
+                        setInteger("prepend-sps-pps-to-idr-frames", 1)
+                    } catch (_: Exception) {}
+                }
+
+                // 4. Constant Bitrate Mode
                 try {
                     setInteger(
                         MediaFormat.KEY_BITRATE_MODE,
                         MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
                     )
-                } catch (e: Exception) {
-                    Log.w(TAG, "CBR mode not supported, falling back to VBR: ${e.message}")
+                } catch (_: Exception) {
                     try {
                         setInteger(
                             MediaFormat.KEY_BITRATE_MODE,
@@ -232,31 +255,13 @@ class ScreenCaptureService : Service() {
                     } catch (_: Exception) {}
                 }
 
-                // Real-time low latency and real-time priority (API 26+)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    try {
-                        setInteger(MediaFormat.KEY_LATENCY, 0)
-                    } catch (_: Exception) {}
-                    try {
-                        setInteger(MediaFormat.KEY_PRIORITY, 0)
-                    } catch (_: Exception) {}
-                } else {
-                    try {
-                        setInteger(MediaFormat.KEY_PRIORITY, 0)
-                    } catch (_: Exception) {}
-                }
-
+                // 5. Low Latency Flags
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    try {
-                        setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-                    } catch (_: Exception) {}
+                    try { setInteger(MediaFormat.KEY_LOW_LATENCY, 1) } catch (_: Exception) {}
                 }
 
-                // Repeat static frames every 50ms for smooth live output
-                setLong(
-                    MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER,
-                    50_000L
-                )
+                // Repeat last frame if screen is static (prevents pipeline starvation)
+                setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 1000000L / DEFAULT_FRAME_RATE)
             }
 
             val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).apply {

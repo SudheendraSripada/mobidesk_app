@@ -449,6 +449,65 @@ class UsbHostReceiver(
     }
 
     /**
+     * Waits for an AOA accessory device to re-enumerate using event-driven USB attach broadcast signals
+     * with a fallback fast latch check, eliminating Thread.sleep polling loops.
+     */
+    fun waitForAoaAccessory(manager: UsbManager, timeoutMs: Long): UsbDevice? {
+        // Immediate check in case device re-enumerated instantly
+        manager.deviceList?.values?.firstOrNull { isAccessoryDevice(it) }?.let { return it }
+
+        val attachLatch = CountDownLatch(1)
+        val attachReceiver = object : BroadcastReceiver() {
+            override fun onReceive(recvContext: Context?, intent: Intent?) {
+                if (intent?.action == UsbManager.ACTION_USB_DEVICE_ATTACHED) {
+                    attachLatch.countDown()
+                }
+            }
+        }
+
+        val filter = IntentFilter(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+        var isRegistered = false
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.registerReceiver(attachReceiver, filter, Context.RECEIVER_EXPORTED)
+            } else {
+                context.registerReceiver(attachReceiver, filter)
+            }
+            isRegistered = true
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to register USB attach broadcast receiver: ${e.message}")
+        }
+
+        val deadline = System.currentTimeMillis() + timeoutMs
+        try {
+            while (isRunning && System.currentTimeMillis() < deadline) {
+                // Check if device is already enumerated
+                val list = manager.deviceList
+                val accessory = list?.values?.firstOrNull { isAccessoryDevice(it) }
+                if (accessory != null) {
+                    return accessory
+                }
+
+                val remainingMs = (deadline - System.currentTimeMillis()).coerceAtLeast(10L)
+                val waitTimeMs = remainingMs.coerceAtMost(500L)
+                try {
+                    attachLatch.await(waitTimeMs, TimeUnit.MILLISECONDS)
+                } catch (_: InterruptedException) {
+                    break
+                }
+            }
+        } finally {
+            if (isRegistered) {
+                try {
+                    context.unregisterReceiver(attachReceiver)
+                } catch (_: Exception) {}
+            }
+        }
+
+        return manager.deviceList?.values?.firstOrNull { isAccessoryDevice(it) }
+    }
+
+    /**
      * Executes AOA control transfers (51 -> 52 -> 53) strictly inside this background thread,
      * opens the device, claims the interface, and locates the Bulk IN endpoint.
      */
@@ -483,26 +542,12 @@ class UsbHostReceiver(
                 throw IllegalStateException("AOA control handshake failed on ${currentDevice.deviceName}")
             }
 
-            // Wait for re-enumeration as accessory device (up to 12s for slow OEM reboots)
-            val deadline = System.currentTimeMillis() + 12000L
-            var foundAccessory = false
-            while (isRunning && System.currentTimeMillis() < deadline) {
-                val list = manager.deviceList
-                val accessory = list?.values?.firstOrNull { isAccessoryDevice(it) }
-                if (accessory != null) {
-                    currentDevice = accessory
-                    foundAccessory = true
-                    Log.i(TAG, "Re-enumerated AOA accessory device found: ${accessory.deviceName}")
-                    break
-                }
-                try {
-                    Thread.sleep(200)
-                } catch (_: InterruptedException) {
-                    break
-                }
-            }
-
-            if (!foundAccessory || !isAccessoryDevice(currentDevice)) {
+            // Wait for re-enumeration as accessory device (up to 12s for slow OEM reboots) using adaptive fast detection
+            val accessory = waitForAoaAccessory(manager, 12000L)
+            if (accessory != null) {
+                currentDevice = accessory
+                Log.i(TAG, "Re-enumerated AOA accessory device found: ${accessory.deviceName}")
+            } else {
                 throw IllegalStateException("Device did not re-enumerate in AOA accessory mode")
             }
         }

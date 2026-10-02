@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import '../config/app_config.dart';
-import '../models/student.dart';
 import '../models/vm_connection.dart';
 import '../services/guacamole_service.dart';
+import '../services/supabase_service.dart';
 import 'dashboard_screen.dart';
 import 'developer_tools_screen.dart';
 import 'setup_screen.dart';
@@ -49,9 +49,10 @@ class _LoginScreenState extends State<LoginScreen> {
 
       final authToken = guacResult.authToken ?? 'DEMO_TOKEN_2026';
 
-      // 2. Load student profile and VM mapping (mock or real)
-      final student = StudentProfile.mock();
-      final vm = VmConnection.mock();
+      // 2. Load student profile and VM mapping from Supabase (or mock fallback)
+      final student = await SupabaseService.getStudentProfile();
+      final vms = await SupabaseService.getAssignedVms();
+      final vm = vms.isNotEmpty ? vms.first : VmConnection.mock();
 
       if (!mounted) return;
 
@@ -181,6 +182,36 @@ class _LoginScreenState extends State<LoginScreen> {
                               _errorMessage!,
                               style: TextStyle(color: colorScheme.onErrorContainer, fontSize: 13),
                             ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                  ] else if (!AppConfig().isSupabaseConfigured && !AppConfig().isDemoMode) ...[
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(color: colorScheme.outlineVariant),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.tune_rounded, color: colorScheme.primary, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Supabase backend not configured. Use Quick Demo Login or configure in Setup.',
+                              style: TextStyle(fontSize: 12, color: colorScheme.onSurfaceVariant),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(builder: (_) => const SetupScreen()),
+                              );
+                            },
+                            child: const Text('Setup'),
                           ),
                         ],
                       ),

@@ -153,19 +153,19 @@ class PhoneCloudPcActivity : Activity() {
 
         // Shortcut Keys: Ctrl, Alt, Win, Esc, Tab
         toolbarPanel.addView(createToolButton("Ctrl") {
-            injectKeyEvent(KeyEvent.KEYCODE_CTRL_LEFT)
+            injectKeyEvent(KeyEvent.KEYCODE_CTRL_LEFT, "Ctrl", "Control")
         })
         toolbarPanel.addView(createToolButton("Alt") {
-            injectKeyEvent(KeyEvent.KEYCODE_ALT_LEFT)
+            injectKeyEvent(KeyEvent.KEYCODE_ALT_LEFT, "Alt", "Alt")
         })
         toolbarPanel.addView(createToolButton("⊞ Win") {
-            injectKeyEvent(KeyEvent.KEYCODE_META_LEFT)
+            injectKeyEvent(KeyEvent.KEYCODE_META_LEFT, "Win", "Meta")
         })
         toolbarPanel.addView(createToolButton("Esc") {
-            injectKeyEvent(KeyEvent.KEYCODE_ESCAPE)
+            injectKeyEvent(KeyEvent.KEYCODE_ESCAPE, "Esc", "Escape")
         })
         toolbarPanel.addView(createToolButton("Tab") {
-            injectKeyEvent(KeyEvent.KEYCODE_TAB)
+            injectKeyEvent(KeyEvent.KEYCODE_TAB, "Tab", "Tab")
         })
 
         // Right Click Helper Key
@@ -203,13 +203,39 @@ class PhoneCloudPcActivity : Activity() {
     private fun injectRightClick() {
         webView.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MENU))
         webView.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MENU))
-        Toast.makeText(this, "Right click (Context Menu) dispatched", Toast.LENGTH_SHORT).show()
+        val js = """
+            (function() {
+                var el = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2) || document.body;
+                var evt = new MouseEvent('contextmenu', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                    button: 2,
+                    buttons: 2,
+                    clientX: window.innerWidth / 2,
+                    clientY: window.innerHeight / 2
+                });
+                el.dispatchEvent(evt);
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+        Toast.makeText(this, "Right click dispatched", Toast.LENGTH_SHORT).show()
     }
 
-    private fun injectKeyEvent(keyCode: Int) {
+    private fun injectKeyEvent(keyCode: Int, keyName: String? = null, jsKey: String? = null) {
         webView.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
         webView.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, keyCode))
-        Toast.makeText(this, "Sent ${KeyEvent.keyCodeToString(keyCode)}", Toast.LENGTH_SHORT).show()
+        if (jsKey != null) {
+            val js = """
+                (function() {
+                    var target = document.activeElement || window;
+                    target.dispatchEvent(new KeyboardEvent('keydown', { key: '$jsKey', bubbles: true }));
+                    target.dispatchEvent(new KeyboardEvent('keyup', { key: '$jsKey', bubbles: true }));
+                })();
+            """.trimIndent()
+            webView.evaluateJavascript(js, null)
+        }
+        Toast.makeText(this, "Sent ${keyName ?: KeyEvent.keyCodeToString(keyCode)}", Toast.LENGTH_SHORT).show()
     }
 
     private fun applyFullScreen() {

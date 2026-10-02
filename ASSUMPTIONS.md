@@ -41,7 +41,8 @@ This document details all technical, architectural, and operational assumptions 
    - The Android phone acts as **USB Accessory** using Android Open Accessory (AOA 2.0).
    - Handshake sequence: Pi requests protocol version (request 51), sends identification strings (request 52), and triggers accessory mode switch (request 53).
 2. **Framing Protocol Extension (`TYPE_DISPLAY_INFO`)**:
-   - Protocol header: 16 bytes big-endian (`0x4D, 0x42`, packet type, flags, payload length, ptsUs).
+   - Protocol header: Exactly 16 bytes big-endian (`0x4D, 0x42`, packet type, flags, payload length, 64-bit ptsUs).
+   - In Python (`mobidesk_dock.py`), the header is packed using `>2sBBIQ` (where `Q` denotes the 8-byte unsigned integer timestamp), perfectly matching Kotlin `buffer.putLong(ptsUs)` and Dart `bd.setUint64(8, ptsUs)`.
    - Packet type `5` (`TYPE_DISPLAY_INFO`) carries 12 bytes of big-endian payload: `width` (int32), `height` (int32), `fps` (int32).
    - Sent by the Pi Dock immediately upon connection after querying the HDMI display EDID via DRM/KMS sysfs (`/sys/class/drm/card*-HDMI-*/modes`).
    - Defaults to `1920x1080 @ 60 FPS` if the monitor mode cannot be parsed or if headless.
@@ -51,7 +52,8 @@ This document details all technical, architectural, and operational assumptions 
 ## 4. Monitor Mode & VirtualDisplay Pipeline
 
 1. **Independent Off-Screen Rendering**:
-   - In Monitor Mode, Android creates a `VirtualDisplay` at the exact monitor resolution (`DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION | VIRTUAL_DISPLAY_FLAG_PUBLIC | VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY`).
+   - In Monitor Mode, Android creates a `VirtualDisplay` at the exact monitor resolution using `DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION | DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY`.
+   - `DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC` is strictly excluded because the Android OS requires the signature-level system permission `android.permission.CAPTURE_VIDEO_OUTPUT`, throwing `SecurityException` for standard 3rd-party applications if included.
    - The `VirtualDisplay` is backed directly by the `MediaCodec` hardware encoder input Surface.
    - An Android `Presentation` (`MobiDeskPresentation`) displays an accelerated `WebView` rendering the Guacamole HTML5 client.
    - Because the `Presentation` renders to the `VirtualDisplay` rather than the primary screen, the phone's status message ("Connected, started streaming") is **NOT** baked into the HDMI monitor image.
@@ -69,11 +71,8 @@ This document details all technical, architectural, and operational assumptions 
 1. **Immersive Client & Navigation**:
    - Fullscreen immersive landscape view (`PhoneCloudPcActivity` on Android, with responsive Flutter backup).
    - Hardware-accelerated WebView with DOM storage and JavaScript enabled.
-   - Floating translucent toolbar providing:
-     - Soft keyboard toggle.
-     - Helper keys for Windows desktop navigation: `Ctrl`, `Alt`, `Win`, `Esc`, `Tab`.
-     - Reconnect and Exit controls.
-   - Touch drag maps to mouse motion, tap maps to left click, and two-finger/right-click helper maps to right click.
+   - Dual-layer input injection: Shortcut helper buttons (`Ctrl`, `Alt`, `Win`, `Esc`, `Tab`) and Right Click dispatch both native Android `KeyEvent`s and synthetic DOM `KeyboardEvent` / `MouseEvent` JavaScript events to ensure the Guacamole HTML5 canvas receives all inputs.
+   - Floating translucent toolbar providing soft keyboard toggle, shortcut keys, reconnect, and disconnect controls.
 
 ---
 

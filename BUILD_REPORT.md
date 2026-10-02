@@ -9,19 +9,19 @@ This report summarizes the implementation, architecture, verification record, te
 ### 1. Android Native Platform Layer (`android/`)
 - `android/app/build.gradle.kts`: Configured `compileSdk = 36`, `minSdk = 24`, and `targetSdk = 35`.
 - `android/app/src/main/AndroidManifest.xml`: Configured `POST_NOTIFICATIONS`, `FOREGROUND_SERVICE_MEDIA_PROJECTION`, `networkSecurityConfig`, registered `PhoneCloudPcActivity`, and labeled app as `MobiDesk`.
-- `android/app/src/main/res/xml/network_security_config.xml`: Created network security configuration permitting cleartext traffic solely for LAN/local Guacamole hosts (valid hostnames/IPs with `includeSubdomains="false"` for IP literals and debug trust-anchors).
+- `android/app/src/main/res/xml/network_security_config.xml`: Created network security configuration permitting cleartext traffic solely for LAN/local Guacamole hosts (including 192.168.1.x, 192.168.0.x, 10.0.x.x, 10.0.0.1, 10.0.2.2, 127.0.0.1, and .local mDNS hostnames).
 - `android/app/src/main/kotlin/com/mobidesk/mobidesk_app/FramingProtocol.kt`: Added `TYPE_DISPLAY_INFO` (type 5), `createDisplayInfoPayload`, `parseDisplayInfo`, and `writeDisplayInfo`.
 - `android/app/src/main/kotlin/com/mobidesk/mobidesk_app/AoaAccessoryManager.kt`: Added `onDisplayInfoReceived` callback, singleton accessor `getInstance(context)`, and integrated `FramingDemuxer` into `listenHostSignals` to process `TYPE_DISPLAY_INFO` from host and cache monitor dimensions.
-- `android/app/src/main/kotlin/com/mobidesk/mobidesk_app/ScreenCaptureService.kt`: Added `STREAM_MODE_VIRTUAL_DISPLAY`, `MobiDeskPresentation` lifecycle management, fallback to `MediaProjection` screen mirror, and phone-screen-off continuous streaming logic with WakeLock.
+- `android/app/src/main/kotlin/com/mobidesk/mobidesk_app/ScreenCaptureService.kt`: Added `STREAM_MODE_VIRTUAL_DISPLAY`, `MobiDeskPresentation` lifecycle management, fallback to `MediaProjection` screen mirror, phone-screen-off continuous streaming logic with WakeLock, exclusion of `VIRTUAL_DISPLAY_FLAG_PUBLIC` to prevent SecurityException on non-system apps, and `TYPE_PRIVATE_PRESENTATION` window setup.
 - `android/app/src/main/kotlin/com/mobidesk/mobidesk_app/MobiDeskPresentation.kt`: Created `Presentation` class using display context to render Guacamole HTML5 WebView directly into VirtualDisplay backed by MediaCodec input surface with proper virtual display metrics.
-- `android/app/src/main/kotlin/com/mobidesk/mobidesk_app/PhoneCloudPcActivity.kt`: Created immersive landscape Activity hosting hardware-accelerated Guacamole WebView with floating shortcut helper keys (`Ctrl`, `Alt`, `Win`, `Esc`, `Tab`, `Right Click`, `Reconnect`, `Disconnect`, and `Dashboard`), fixing child view double-parenting layout crash.
-- `android/app/src/main/kotlin/com/mobidesk/mobidesk_app/MainActivity.kt`: Added MethodChannel handlers for `startMonitorStream`, `startPhoneCloudPc`, `getDockDisplayInfo`, and `isFallbackActive`, syncing with `AoaAccessoryManager` singleton.
+- `android/app/src/main/kotlin/com/mobidesk/mobidesk_app/PhoneCloudPcActivity.kt`: Created immersive landscape Activity hosting hardware-accelerated Guacamole WebView with floating shortcut helper keys (`Ctrl`, `Alt`, `Win`, `Esc`, `Tab`, `Right Click`, `Reconnect`, `Disconnect`, and `Dashboard`), dual-layer native KeyEvent + DOM JavaScript event injection, and fixed child view parenting layout.
+- `android/app/src/main/kotlin/com/mobidesk/mobidesk_app/MainActivity.kt`: Added MethodChannel handlers for `startMonitorStream`, `startPhoneCloudPc`, `getDockDisplayInfo`, and `isFallbackActive`, syncing with `AoaAccessoryManager` singleton, tracking `currentActivity` context, and requesting Android 13+ `POST_NOTIFICATIONS` runtime permission.
 - `android/app/src/test/kotlin/com/mobidesk/mobidesk_app/FramingDemuxerTest.kt`: Added unit test `testTypeDisplayInfoRoundTrip` verifying 12-byte payload encoding, decoding, and demuxing.
 
 ### 2. Flutter / Dart Application Layer (`lib/`)
 - `pubspec.yaml`: Added `supabase_flutter: ^2.8.0`.
 - `lib/main.dart`: Material 3 theme, configured `LoginScreen` entrypoint, and maintained `MyHomePage` alias for backwards compatibility.
-- `lib/config/app_config.dart`: Configuration service managing Supabase URL, Anon Key, Guacamole URL, and demo mode.
+- `lib/config/app_config.dart`: Configuration service managing Supabase URL, Anon Key, Guacamole URL, demo mode, and `String.fromEnvironment` configuration support.
 - `lib/models/student.dart`: Student profile model matching Supabase `students` table.
 - `lib/models/vm_connection.dart`: VM connection model matching Supabase `vms` table.
 - `lib/models/academic_data.dart`: Models for Attendance, Quizzes, and Academic Overview mock cards.
@@ -29,7 +29,7 @@ This report summarizes the implementation, architecture, verification record, te
 - `lib/services/guacamole_service.dart`: Guacamole REST API client (`/api/tokens`) and client URL generator.
 - `lib/services/supabase_service.dart`: Supabase client integration querying `students` and `vms` tables with graceful fallback.
 - `lib/services/usb_stream_service.dart`: MethodChannel bridge for dock display info, monitor streaming, phone cloud PC, and receiver.
-- `lib/screens/login_screen.dart`: Material 3 Login screen with quick demo login and logo long-press trigger for Developer Tools.
+- `lib/screens/login_screen.dart`: Material 3 Login screen with quick demo login, live Supabase queries for profile/VM access, setup banner for unconfigured instances, and logo long-press trigger for Developer Tools.
 - `lib/screens/dashboard_screen.dart`: Student dashboard displaying profile, attendance, quizzes, academics, and Cloud PC cards (Phone Mode & Monitor Mode).
 - `lib/screens/phone_cloud_pc_screen.dart`: Option A Phone Mode screen with soft keyboard toggle and shortcut keys.
 - `lib/screens/monitor_mode_screen.dart`: Option B Monitor Mode multi-stage flow ("Connect Dock" -> "Reading Resolution" -> "Connected, started streaming"), with fixed flexible layout preventing title text overflow.
@@ -49,7 +49,7 @@ This report summarizes the implementation, architecture, verification record, te
 - `server/README.md`: Step-by-step instructions for Ubuntu 24.04, Guacamole setup, Windows RDP configuration, student user creation, and `nc -vz` connectivity checks.
 
 ### 5. Raspberry Pi 4B Dock (`dock/raspberry-pi/`)
-- `dock/raspberry-pi/mobidesk_dock.py`: Python daemon implementing AOA 2.0 handshake, DRM monitor resolution detection, `TYPE_DISPLAY_INFO` transmission, GStreamer H.264 HDMI pipeline, and heartbeat requests.
+- `dock/raspberry-pi/mobidesk_dock.py`: Python daemon implementing AOA 2.0 handshake, DRM monitor resolution detection, `TYPE_DISPLAY_INFO` transmission with binary header `>2sBBIQ` 64-bit timestamp, GStreamer H.264 HDMI pipeline, resilient USB configuration, and heartbeat requests.
 - `dock/raspberry-pi/install.sh`: System installation script for dependencies, udev rules, and systemd service.
 - `dock/raspberry-pi/mobidesk-dock.service`: Systemd service unit.
 - `dock/raspberry-pi/99-mobidesk-dock.rules`: Udev rules granting non-root USB access.
@@ -70,7 +70,7 @@ This report summarizes the implementation, architecture, verification record, te
 ```text
 $ flutter analyze
 Analyzing mobidesk_app...                                       
-No issues found! (ran in 2.1s)
+No issues found! (ran in 1.6s)
 ```
 
 ### 2. `flutter test`
@@ -78,21 +78,21 @@ No issues found! (ran in 2.1s)
 $ flutter test
 00:00 +0: loading /workspaces/mobidesk_app/test/framing_protocol_test.dart
 00:00 +0: /workspaces/mobidesk_app/test/framing_protocol_test.dart: FramingProtocol Tests Header constants and structure
-00:00 +1: /workspaces/mobidesk_app/test/widget_test.dart: App launches with LoginScreen and displays branding
-00:00 +2: /workspaces/mobidesk_app/test/widget_test.dart: App launches with LoginScreen and displays branding
-00:00 +3: /workspaces/mobidesk_app/test/widget_test.dart: App launches with LoginScreen and displays branding
-00:00 +4: /workspaces/mobidesk_app/test/widget_test.dart: App launches with LoginScreen and displays branding
-00:00 +5: /workspaces/mobidesk_app/test/widget_test.dart: App launches with LoginScreen and displays branding
-00:00 +6: /workspaces/mobidesk_app/test/widget_test.dart: App launches with LoginScreen and displays branding
-00:00 +7: /workspaces/mobidesk_app/test/widget_test.dart: App launches with LoginScreen and displays branding
+00:00 +1: /workspaces/mobidesk_app/test/framing_protocol_test.dart: FramingProtocol Tests Header creation layout and byte order
+00:00 +2: /workspaces/mobidesk_app/test/framing_protocol_test.dart: FramingProtocol Tests TYPE_DISPLAY_INFO payload round-trip
+00:00 +3: /workspaces/mobidesk_app/test/framing_protocol_test.dart: FramingProtocol Tests parseDisplayInfo throws ArgumentError on too-short payload
+00:00 +4: /workspaces/mobidesk_app/test/framing_protocol_test.dart: FramingProtocol Tests Encode complete frame packet
+00:00 +5: /workspaces/mobidesk_app/test/framing_protocol_test.dart: FramingProtocol Tests FramingDemuxer single frame parsing
+00:00 +6: /workspaces/mobidesk_app/test/framing_protocol_test.dart: FramingProtocol Tests FramingDemuxer TYPE_DISPLAY_INFO stream parsing
+00:00 +7: /workspaces/mobidesk_app/test/framing_protocol_test.dart: FramingProtocol Tests FramingDemuxer fragmented feed and garbage resynchronization
 00:00 +8: /workspaces/mobidesk_app/test/widget_test.dart: App launches with LoginScreen and displays branding
 00:00 +9: /workspaces/mobidesk_app/test/widget_test.dart: App launches with LoginScreen and displays branding
 00:00 +10: /workspaces/mobidesk_app/test/widget_test.dart: App launches with LoginScreen and displays branding
 00:00 +11: /workspaces/mobidesk_app/test/widget_test.dart: App launches with LoginScreen and displays branding
 00:00 +12: /workspaces/mobidesk_app/test/widget_test.dart: App launches with LoginScreen and displays branding
 00:00 +13: /workspaces/mobidesk_app/test/widget_test.dart: App launches with LoginScreen and displays branding
-00:01 +14: /workspaces/mobidesk_app/test/widget_test.dart: App launches with LoginScreen and displays branding
-00:01 +15: /workspaces/mobidesk_app/test/widget_test.dart: Long-pressing MobiDesk logo opens Developer Tools
+00:00 +14: /workspaces/mobidesk_app/test/widget_test.dart: App launches with LoginScreen and displays branding
+00:02 +15: /workspaces/mobidesk_app/test/widget_test.dart: Long-pressing MobiDesk logo opens Developer Tools
 00:02 +16: /workspaces/mobidesk_app/test/widget_test.dart: Quick Demo Login navigates to Dashboard with Cloud PC options
 00:02 +17: /workspaces/mobidesk_app/test/widget_test.dart: Tapping Phone Mode opens PhoneCloudPcScreen with helper toolbar
 00:02 +18: /workspaces/mobidesk_app/test/widget_test.dart: Tapping Monitor Mode guides through dock detection and streaming
@@ -103,8 +103,8 @@ $ flutter test
 Android Kotlin Unit Tests:
 ```text
 $ cd android && ./gradlew :app:testDebugUnitTest
-BUILD SUCCESSFUL in 26s
-99 actionable tasks: 17 executed, 82 up-to-date
+BUILD SUCCESSFUL in 56s
+99 actionable tasks: 99 executed
 
 39 Android unit tests passed:
 - FramingDemuxerTest: 7 passed (including testTypeDisplayInfoRoundTrip)
@@ -115,16 +115,14 @@ BUILD SUCCESSFUL in 26s
 ### 3. `flutter build apk --release`
 ```text
 $ flutter build apk --release
-Running Gradle task 'assembleRelease'...                        
-Font asset "MaterialIcons-Regular.otf" was tree-shaken, reducing it from 1645184 to 8668 bytes (99.5% reduction). Tree-shaking can be disabled by providing the --no-tree-shake-icons flag when building your app.
-Running Gradle task 'assembleRelease'...                          164.9s
+Running Gradle task 'assembleRelease'...                           37.7s
 ✓ Built build/app/outputs/flutter-apk/app-release.apk (50.5MB)
 ```
 
 ### 4. APK Verification & Badging
 ```bash
 $ ls -la "executables apks/MobiDesk-prototype-v1.apk"
--rw-rw-rw- 1 codespace codespace 50458788 Oct  2 13:00 'executables apks/MobiDesk-prototype-v1.apk'
+-rw-rw-rw- 1 codespace codespace 50459004 Oct  2 13:57 'executables apks/MobiDesk-prototype-v1.apk'
 
 $ aapt dump badging "executables apks/MobiDesk-prototype-v1.apk" | head -n 15
 package: name='com.mobidesk.mobidesk_app' versionCode='1' versionName='1.0.0' platformBuildVersionName='16' platformBuildVersionCode='36' compileSdkVersion='36' compileSdkVersionCodename='16'

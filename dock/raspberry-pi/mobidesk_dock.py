@@ -99,22 +99,22 @@ def detect_monitor_mode():
 
 
 def create_header(pkt_type, flags, payload_len, pts_us=0):
-    """Creates a 16-byte FramingProtocol binary header."""
-    return struct.pack('>2sBBII', MAGIC_BYTES, pkt_type, flags, payload_len, pts_us & 0xFFFFFFFF)
+    """Creates a 16-byte FramingProtocol binary header (>2sBBIQ)."""
+    return struct.pack('>2sBBIQ', MAGIC_BYTES, pkt_type, flags, payload_len, pts_us & 0xFFFFFFFFFFFFFFFF)
 
 
 def create_display_info_packet(width, height, fps):
     """
     Builds a TYPE_DISPLAY_INFO packet (16 bytes header + 12 bytes payload).
     """
-    header = struct.pack('>2sBBII', MAGIC_BYTES, TYPE_DISPLAY_INFO, FLAG_NONE, 12, 0)
+    header = create_header(TYPE_DISPLAY_INFO, FLAG_NONE, 12, 0)
     payload = struct.pack('>III', width, height, fps)
     return header + payload
 
 
 def create_heartbeat_packet():
     """Builds a TYPE_HEARTBEAT packet requesting an IDR keyframe."""
-    return struct.pack('>2sBBII', MAGIC_BYTES, TYPE_HEARTBEAT, FLAG_KEYFRAME, 0, 0)
+    return create_header(TYPE_HEARTBEAT, FLAG_KEYFRAME, 0, 0)
 
 
 class DockGStreamerPipeline:
@@ -219,16 +219,19 @@ class MobiDeskDock:
     def setup_endpoints(self, dev):
         """Configures interface and finds bulk IN and OUT endpoints."""
         try:
-            dev.set_configuration()
+            try:
+                dev.set_configuration()
+            except Exception:
+                pass
             cfg = dev.get_active_configuration()
             intf = cfg[(0, 0)]
 
             # Claim interface if kernel driver active
-            if dev.is_kernel_driver_active(0):
-                try:
+            try:
+                if dev.is_kernel_driver_active(0):
                     dev.detach_kernel_driver(0)
-                except Exception:
-                    pass
+            except Exception:
+                pass
             usb.util.claim_interface(dev, 0)
 
             ep_in = None

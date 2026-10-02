@@ -24,6 +24,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import android.view.Surface
+import android.view.WindowManager
 import java.nio.ByteBuffer
 import kotlin.concurrent.thread
 
@@ -301,8 +302,9 @@ class ScreenCaptureService : Service() {
             if (streamMode == STREAM_MODE_VIRTUAL_DISPLAY && !guacUrl.isNullOrEmpty()) {
                 try {
                     val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+                    // Exclude VIRTUAL_DISPLAY_FLAG_PUBLIC: public virtual displays require system signature
+                    // permission CAPTURE_VIDEO_OUTPUT, which throws SecurityException for 3rd-party apps.
                     val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
-                                DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
                                 DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY
                     val vDisplay = displayManager.createVirtualDisplay(
                         "MobiDeskMonitorDisplay",
@@ -316,7 +318,11 @@ class ScreenCaptureService : Service() {
 
                     Handler(Looper.getMainLooper()).post {
                         try {
-                            val pres = MobiDeskPresentation(this@ScreenCaptureService, vDisplay.display, guacUrl)
+                            val activityContext = MainActivity.currentActivity ?: this@ScreenCaptureService
+                            val pres = MobiDeskPresentation(activityContext, vDisplay.display, guacUrl)
+                            try {
+                                pres.window?.setType(WindowManager.LayoutParams.TYPE_PRIVATE_PRESENTATION)
+                            } catch (_: Exception) {}
                             pres.show()
                             presentation = pres
                             Log.i(TAG, "MobiDeskPresentation launched on VirtualDisplay at ${width}x${height} for Guacamole session.")

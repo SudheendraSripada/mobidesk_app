@@ -23,10 +23,34 @@ class MainActivity : FlutterActivity() {
     private var requestedFps = 60
 
     companion object {
+        var currentActivity: Activity? = null
         var lastDockWidth = 1920
         var lastDockHeight = 1080
         var lastDockFps = 60
         var hasReceivedDockDisplayInfo = false
+    }
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        currentActivity = this
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1003)
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        currentActivity = this
+    }
+
+    override fun onDestroy() {
+        if (currentActivity == this) {
+            currentActivity = null
+        }
+        super.onDestroy()
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {

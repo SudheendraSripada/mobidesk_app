@@ -78,6 +78,21 @@ class AoaAccessoryManager(private val context: Context) {
     var hasDisplayInfo: Boolean = false
         private set
 
+    @Volatile
+    var mouseEventsCount: Long = 0L
+        private set
+
+    @Volatile
+    var keyEventsCount: Long = 0L
+        private set
+
+    @Volatile
+    var keyframeRequestsCount: Long = 0L
+        private set
+
+    val droppedFramesCount: Long
+        get() = sender.droppedFramesCount.get()
+
     var onAccessoryConnected: (() -> Unit)? = null
     var onAccessoryDisconnected: (() -> Unit)? = null
     var onKeyframeRequested: (() -> Unit)? = null
@@ -95,11 +110,14 @@ class AoaAccessoryManager(private val context: Context) {
                     } else {
                         intent.getParcelableExtra(UsbManager.EXTRA_ACCESSORY)
                     }
-                    Log.i(TAG, "USB Accessory attached: ${accessory?.description}")
+                    val desc = "${accessory?.manufacturer}/${accessory?.model} (${accessory?.description})"
+                    AppLogger.i(TAG, "ACTION_USB_ACCESSORY_ATTACHED received for $desc")
                     accessory?.let {
                         if (usbManager.hasPermission(it)) {
+                            AppLogger.i(TAG, "Accessory permission already granted, opening accessory $desc")
                             openAccessory(it)
                         } else {
+                            AppLogger.i(TAG, "Requesting permission for accessory $desc")
                             requestAccessoryPermission(it)
                         }
                     }
@@ -111,7 +129,7 @@ class AoaAccessoryManager(private val context: Context) {
                     } else {
                         intent.getParcelableExtra(UsbManager.EXTRA_ACCESSORY)
                     }
-                    Log.i(TAG, "USB Accessory detached: ${accessory?.description}")
+                    AppLogger.i(TAG, "ACTION_USB_ACCESSORY_DETACHED: ${accessory?.description}")
                     closeAccessory()
                 }
                 ACTION_USB_PERMISSION -> {
@@ -122,11 +140,11 @@ class AoaAccessoryManager(private val context: Context) {
                     } else {
                         intent.getParcelableExtra(UsbManager.EXTRA_ACCESSORY)
                     }
+                    AppLogger.i(TAG, "USB Accessory permission result: granted=$granted for ${accessory?.description}")
                     if (granted && accessory != null) {
-                        Log.i(TAG, "USB Accessory permission granted.")
                         openAccessory(accessory)
                     } else {
-                        Log.w(TAG, "USB Accessory permission denied.")
+                        AppLogger.w(TAG, "USB Accessory permission was denied by user")
                     }
                 }
             }
@@ -263,13 +281,14 @@ class AoaAccessoryManager(private val context: Context) {
         val demuxer = FramingDemuxer { type, _, _, payload ->
             when (type) {
                 FramingProtocol.TYPE_HEARTBEAT, FramingProtocol.TYPE_CONFIG -> {
-                    Log.i(TAG, "Host requested sync frame (keyframe)")
+                    keyframeRequestsCount++
+                    AppLogger.i(TAG, "Host requested sync frame (keyframe count: $keyframeRequestsCount)")
                     onKeyframeRequested?.invoke()
                 }
                 FramingProtocol.TYPE_DISPLAY_INFO -> {
                     try {
                         val (w, h, fps) = FramingProtocol.parseDisplayInfo(payload)
-                        Log.i(TAG, "Host reported display info: ${w}x${h} @ ${fps}fps")
+                        AppLogger.i(TAG, "Host reported DISPLAY_INFO: ${w}x${h} @ ${fps}fps")
                         lastDisplayWidth = w
                         lastDisplayHeight = h
                         lastDisplayFps = fps
@@ -280,23 +299,25 @@ class AoaAccessoryManager(private val context: Context) {
                         MainActivity.hasReceivedDockDisplayInfo = true
                         onDisplayInfoReceived?.invoke(w, h, fps)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to parse DISPLAY_INFO payload from host: ${e.message}", e)
+                        AppLogger.e(TAG, "Failed to parse DISPLAY_INFO payload from host: ${e.message}", e)
                     }
                 }
                 FramingProtocol.TYPE_INPUT_MOUSE -> {
                     try {
+                        mouseEventsCount++
                         val mouse = FramingProtocol.parseInputMouse(payload)
                         onInputMouseReceived?.invoke(mouse.normX, mouse.normY, mouse.buttonMask, mouse.wheelDx, mouse.wheelDy)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to parse INPUT_MOUSE from host: ${e.message}", e)
+                        AppLogger.e(TAG, "Failed to parse INPUT_MOUSE from host: ${e.message}", e)
                     }
                 }
                 FramingProtocol.TYPE_INPUT_KEY -> {
                     try {
+                        keyEventsCount++
                         val key = FramingProtocol.parseInputKey(payload)
                         onInputKeyReceived?.invoke(key.keyCode, key.state, key.modifierMask)
                     } catch (e: Exception) {
-                        Log.e(TAG, "Failed to parse INPUT_KEY from host: ${e.message}", e)
+                        AppLogger.e(TAG, "Failed to parse INPUT_KEY from host: ${e.message}", e)
                     }
                 }
             }

@@ -74,6 +74,63 @@ class ScreenCaptureService : Service() {
         @Volatile
         var isFallbackActive: Boolean = false
             private set
+
+        @Volatile
+        var currentFps: Float = 0f
+
+        @Volatile
+        var currentKbps: Int = 0
+
+        @Volatile
+        var totalFramesSent: Long = 0L
+
+        @Volatile
+        var droppedFramesCount: Long = 0L
+
+        @Volatile
+        var keyframesSentCount: Long = 0L
+
+        @Volatile
+        var keyframeRequestsCount: Long = 0L
+
+        @Volatile
+        var fallbackNotice: String? = null
+
+        @Volatile
+        var activeFgsType: Int = 0
+
+        @Volatile
+        var activeWidth: Int = DEFAULT_WIDTH
+
+        @Volatile
+        var activeHeight: Int = DEFAULT_HEIGHT
+
+        @Volatile
+        private var instance: ScreenCaptureService? = null
+
+        fun updatePresentationStatus(errorText: String?, countdown: Int = 0) {
+            instance?.let { service ->
+                service.mainHandler.post {
+                    if (errorText != null) {
+                        service.presentation?.showErrorScreen(errorText, countdown)
+                    } else {
+                        service.presentation?.showConnectingScreen("MobiDesk - connecting your Cloud PC...")
+                    }
+                }
+            }
+        }
+
+        fun updatePresentationSessionUrl(url: String) {
+            instance?.let { service ->
+                service.mainHandler.post {
+                    service.presentation?.updateSessionUrl(url)
+                }
+            }
+        }
+
+        fun requestKeyframe() {
+            instance?.requestSyncFrame()
+        }
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -171,6 +228,9 @@ class ScreenCaptureService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
+        AppLogger.init(applicationContext)
+        AppLogger.i(TAG, "ScreenCaptureService created")
         createNotificationChannel()
     }
 
@@ -400,19 +460,24 @@ class ScreenCaptureService : Service() {
             }
             mediaCodec = codec
 
+            activeWidth = width
+            activeHeight = height
+            AppLogger.i(TAG, "MediaCodec AVC encoder configured: ${width}x${height} @ ${frameRate}fps, bitrate=$bitRate bps, CBR mode, I-frame interval=${DEFAULT_I_FRAME_INTERVAL}s")
+
             val surface = inputSurface
             if (surface == null) {
-                Log.e(TAG, "MediaCodec input surface is null.")
+                AppLogger.e(TAG, "MediaCodec input surface is null.")
                 handleStop()
                 return
             }
 
             // 8. Create VirtualDisplay directing display frames to MediaCodec input surface
-            if (isVirtualDisplay && !guacUrl.isNullOrEmpty()) {
+            if (isVirtualDisplay) {
                 try {
                     val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
                     val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
                                 DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY
+                    AppLogger.i(TAG, "Creating VirtualDisplay 'MobiDeskMonitorDisplay' (${width}x${height} @ ${frameRate}fps, dpi=$dpi, flags=PRESENTATION|OWN_CONTENT_ONLY)")
                     val vDisplay = displayManager.createVirtualDisplay(
                         "MobiDeskMonitorDisplay",
                         width,
@@ -427,21 +492,21 @@ class ScreenCaptureService : Service() {
                         try {
                             val activity = MainActivity.currentActivity
                             if (activity == null || activity.isFinishing || activity.isDestroyed) {
-                                Log.w(TAG, "No valid foreground Activity for Presentation, activating fallback mirror")
+                                AppLogger.w(TAG, "No valid foreground Activity for Presentation, activating fallback mirror")
                                 fallbackToMirror(width, height, dpi, surface)
                                 return@post
                             }
                             val pres = MobiDeskPresentation(activity, vDisplay.display, guacUrl)
                             pres.show()
                             presentation = pres
-                            Log.i(TAG, "MobiDeskPresentation launched on VirtualDisplay at ${width}x${height} for Guacamole session.")
+                            AppLogger.i(TAG, "MobiDeskPresentation launched on VirtualDisplay at ${width}x${height} (guacUrl=${guacUrl ?: "waiting"})")
                         } catch (e: Exception) {
-                            Log.w(TAG, "Failed to instantiate Presentation on VirtualDisplay, activating fallback mirror: ${e.message}", e)
+                            AppLogger.w(TAG, "Failed to instantiate Presentation on VirtualDisplay, activating fallback mirror: ${e.message}", e)
                             fallbackToMirror(width, height, dpi, surface)
                         }
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Failed to create Presentation VirtualDisplay, activating fallback mirror: ${e.message}", e)
+                    AppLogger.w(TAG, "Failed to create Presentation VirtualDisplay, activating fallback mirror: ${e.message}", e)
                     fallbackToMirror(width, height, dpi, surface)
                 }
             } else {
@@ -625,6 +690,10 @@ class ScreenCaptureService : Service() {
     private fun drainCodec() {
         val codec = mediaCodec ?: return
         val bufferInfo = MediaCodec.BufferInfo()
+        var hasLoggedFirstFrame = false
+        var lastStatsLogTime = System.currentTimeMillis()
+        var intervalFrames = 0L
+        var intervalBytes = 0L
 
         while (isStreaming) {
             try {
@@ -676,6 +745,18 @@ class ScreenCaptureService : Service() {
                                 0,
                                 finalPayload.size
                             )
+
+                            totalFramesSent++
+                            intervalFrames++
+                            intervalBytes += finalPayload.size
+                            if (isKeyframe) {
+                                keyframesSentCount++
+                            }
+
+                            if (!hasLoggedFirstFrame) {
+                                hasLoggedFirstFrame = true
+                                AppLogger.i(TAG, "First frame sent to dock at timestamp=${System.currentTimeMillis()} (${finalPayload.size} bytes, isKeyframe=$isKeyframe)")
+                            }
                         }
                     }
 
@@ -700,6 +781,31 @@ class ScreenCaptureService : Service() {
                         aoaAccessoryManager?.sendConfig(spsPps)
                         requestSyncFrame()
                     }
+                }
+
+                // Check 5-second periodic stats
+                val now = System.currentTimeMillis()
+                if (now - lastStatsLogTime >= 5000L) {
+                    val elapsedSec = (now - lastStatsLogTime) / 1000.0f
+                    ScreenCaptureService.currentFps = if (elapsedSec > 0f) intervalFrames / elapsedSec else 0f
+                    ScreenCaptureService.currentKbps = if (elapsedSec > 0f) ((intervalBytes * 8) / (elapsedSec * 1000)).toInt() else 0
+                    val dropped = (aoaAccessoryManager?.droppedFramesCount ?: 0L)
+                    droppedFramesCount = dropped
+                    val keyframes = keyframesSentCount
+                    val wakeHeld = wakeLock?.isHeld == true
+                    val wifiHeld = wifiLock?.isHeld == true
+                    val fgsTypeName = when (activeFgsType) {
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE -> "connectedDevice"
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION -> "mediaProjection"
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE -> "specialUse"
+                        else -> "none/default($activeFgsType)"
+                    }
+                    AppLogger.i(TAG, "STREAM STATS: fps=%.1f, kbps=%d, totalFrames=%d, dropped=%d, keyframes=%d, wakeLock=%b, wifiLock=%b, fgsType=%s".format(
+                        ScreenCaptureService.currentFps, ScreenCaptureService.currentKbps, totalFramesSent, dropped, keyframes, wakeHeld, wifiHeld, fgsTypeName
+                    ))
+                    intervalFrames = 0L
+                    intervalBytes = 0L
+                    lastStatsLogTime = now
                 }
             } catch (e: Exception) {
                 if (isStreaming) {
@@ -931,22 +1037,39 @@ class ScreenCaptureService : Service() {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             }
             try {
+                // Verify prerequisites for connectedDevice on Android 14/15
+                if (isVirtualDisplay && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    AppLogger.i(TAG, "Android 14/15 FGS connectedDevice prerequisite check: CHANGE_WIFI_STATE / CHANGE_NETWORK_STATE declared in manifest, accessory connected=${aoaAccessoryManager?.isConnected}")
+                }
                 startForeground(NOTIFICATION_ID, notification, targetType)
+                activeFgsType = targetType
+                AppLogger.i(TAG, "startForeground succeeded with type: $targetType")
             } catch (e: SecurityException) {
-                Log.w(TAG, "Failed startForeground with type $targetType: ${e.message}")
+                AppLogger.w(TAG, "SecurityException on startForeground with connectedDevice: ${e.message}; retrying with alternative type specialUse")
+                var retrySuccess = false
                 if (isVirtualDisplay && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                     try {
                         startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                        activeFgsType = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                        retrySuccess = true
+                        AppLogger.i(TAG, "startForeground succeeded with fallback type: specialUse")
                     } catch (e2: Exception) {
-                        Log.e(TAG, "Failed startForeground with specialUse fallback: ${e2.message}", e2)
-                        startForeground(NOTIFICATION_ID, notification)
+                        AppLogger.e(TAG, "Failed startForeground with specialUse fallback: ${e2.message}", e2)
                     }
-                } else {
-                    startForeground(NOTIFICATION_ID, notification)
+                }
+                if (!retrySuccess) {
+                    fallbackNotice = "Foreground service permission denied for connectedDevice. Falling back to Mirror Mode."
+                    AppLogger.w(TAG, fallbackNotice!!)
+                    try {
+                        startForeground(NOTIFICATION_ID, notification)
+                    } catch (e3: Exception) {
+                        AppLogger.e(TAG, "startForeground basic fallback failed: ${e3.message}", e3)
+                    }
                 }
             }
         } else {
             startForeground(NOTIFICATION_ID, notification)
+            AppLogger.i(TAG, "startForeground succeeded (legacy mode)")
         }
     }
 
@@ -1005,6 +1128,10 @@ class ScreenCaptureService : Service() {
 
     override fun onDestroy() {
         handleStop()
+        if (instance == this) {
+            instance = null
+        }
+        AppLogger.i(TAG, "ScreenCaptureService destroyed")
         super.onDestroy()
     }
 }

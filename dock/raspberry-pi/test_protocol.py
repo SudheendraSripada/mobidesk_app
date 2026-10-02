@@ -128,6 +128,57 @@ def run_tests():
     print(f" [PASS] Stream fragmentation and garbage resynchronization passed")
     passed += 1
 
+    # Additional Test: AOA Identity Tuples Single Source of Truth
+    total += 1
+    import xml.etree.ElementTree as ET
+    aoa_json_path = os.path.join(current_dir, "..", "..", "aoa_identity.json")
+    if not os.path.exists(aoa_json_path):
+        aoa_json_path = os.path.abspath("aoa_identity.json")
+    with open(aoa_json_path, 'r', encoding='utf-8') as f:
+        aoa_truth = json.load(f)
+
+    # Check mobidesk_dock.AOA_STRINGS
+    dock_strings = mobidesk_dock.AOA_STRINGS
+    assert dock_strings[0] == aoa_truth['manufacturer'], f"Manufacturer mismatch: {dock_strings[0]} vs {aoa_truth['manufacturer']}"
+    assert dock_strings[1] == aoa_truth['model'], f"Model mismatch: {dock_strings[1]} vs {aoa_truth['model']}"
+    assert dock_strings[2] == aoa_truth['description'], f"Description mismatch: {dock_strings[2]} vs {aoa_truth['description']}"
+    assert dock_strings[3] == aoa_truth['version'], f"Version mismatch: {dock_strings[3]} vs {aoa_truth['version']}"
+    assert dock_strings[4] == aoa_truth['uri'], f"URI mismatch: {dock_strings[4]} vs {aoa_truth['uri']}"
+    assert dock_strings[5] == aoa_truth['serial'], f"Serial mismatch: {dock_strings[5]} vs {aoa_truth['serial']}"
+
+    # Check accessory_filter.xml
+    xml_path = os.path.join(current_dir, "..", "..", "android", "app", "src", "main", "res", "xml", "accessory_filter.xml")
+    if not os.path.exists(xml_path):
+        xml_path = os.path.abspath("android/app/src/main/res/xml/accessory_filter.xml")
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
+    acc = root.find("usb-accessory")
+    assert acc is not None, "Missing usb-accessory in accessory_filter.xml"
+    assert acc.attrib.get('manufacturer') == aoa_truth['manufacturer'], "XML manufacturer mismatch"
+    assert acc.attrib.get('model') == aoa_truth['model'], "XML model mismatch"
+    assert acc.attrib.get('version') == aoa_truth['version'], "XML version mismatch"
+
+    print(" [PASS] AOA identity 6-tuple exact match across mobidesk_dock, aoa_identity.json, and accessory_filter.xml")
+    passed += 1
+
+    # Additional Test: EvdevInputForwarder event rate calculation
+    total += 1
+    forwarder = mobidesk_dock.EvdevInputForwarder(1920, 1080, lambda pkt: None)
+    for _ in range(50):
+        forwarder.record_event()
+    rate = forwarder.get_and_reset_event_rate(5.0)
+    assert abs(rate - 10.0) < 1e-4, f"Event rate mismatch: {rate} != 10.0"
+    assert forwarder.get_and_reset_event_rate(5.0) == 0.0, "Event count was not reset"
+    print(" [PASS] EvdevInputForwarder event rate calculation and reset verified")
+    passed += 1
+
+    # Additional Test: run_diagnose executes cleanly without raising exceptions
+    total += 1
+    ret = mobidesk_dock.run_diagnose()
+    assert ret == 0, f"run_diagnose returned non-zero code: {ret}"
+    print(" [PASS] mobidesk_dock.run_diagnose() executed cleanly (exit code 0)")
+    passed += 1
+
     print("=" * 60)
     print(f"Result: {passed}/{total} tests passed successfully.")
     print("=" * 60)
@@ -136,3 +187,4 @@ def run_tests():
 
 if __name__ == '__main__':
     sys.exit(run_tests())
+

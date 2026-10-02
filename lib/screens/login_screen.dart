@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
 import '../config/app_config.dart';
 import '../models/vm_connection.dart';
+import '../services/app_logger.dart';
+import '../services/auth_storage.dart';
 import '../services/guacamole_service.dart';
 import '../services/supabase_service.dart';
+import '../services/usb_stream_service.dart';
 import 'dashboard_screen.dart';
 import 'developer_tools_screen.dart';
+import 'monitor_mode_screen.dart';
 import 'setup_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -20,7 +24,35 @@ class _LoginScreenState extends State<LoginScreen> {
   final _passwordController = TextEditingController(text: 'MobiDesk2026!');
   bool _isLoading = false;
   bool _obscurePassword = true;
+  bool _keepMeSignedIn = true;
   String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkStoredCredentialsAndPendingDock();
+  }
+
+  Future<void> _checkStoredCredentialsAndPendingDock() async {
+    final creds = await AuthStorage.getCredentials();
+    final keep = creds['keepSignedIn'] == 'true';
+    if (creds['username'] != null && creds['username']!.isNotEmpty) {
+      _usernameController.text = creds['username']!;
+    }
+    if (creds['password'] != null && creds['password']!.isNotEmpty) {
+      _passwordController.text = creds['password']!;
+    }
+    if (mounted) {
+      setState(() {
+        _keepMeSignedIn = keep;
+      });
+    }
+
+    if (keep && creds['username'] != null && creds['password'] != null) {
+      AppLogger.i('LoginScreen', 'Auto-signing in from secure storage');
+      _handleLogin(isSilent: true);
+    }
+  }
 
   @override
   void dispose() {
@@ -29,8 +61,8 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
-  Future<void> _handleLogin() async {
-    if (!_formKey.currentState!.validate()) return;
+  Future<void> _handleLogin({bool isSilent = false}) async {
+    if (!isSilent && !_formKey.currentState!.validate()) return;
 
     setState(() {
       _isLoading = true;
@@ -54,17 +86,41 @@ class _LoginScreenState extends State<LoginScreen> {
       final vms = await SupabaseService.getAssignedVms();
       final vm = vms.isNotEmpty ? vms.first : VmConnection.mock();
 
+      // 3. Persist credentials in encrypted storage
+      await AuthStorage.saveCredentials(
+        username: username,
+        password: password,
+        authToken: authToken,
+        keepSignedIn: _keepMeSignedIn,
+      );
+
+      // 4. Check if dock was attached prior to login
+      final hasPendingDock = await UsbStreamService.hasPendingDockAttach(consume: true);
+      final autoLaunch = await UsbStreamService.checkAutoLaunchMonitor();
+
       if (!mounted) return;
 
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute<void>(
-          builder: (_) => DashboardScreen(
-            student: student,
-            vm: vm,
-            guacAuthToken: authToken,
+      if (hasPendingDock || autoLaunch) {
+        AppLogger.i('LoginScreen', 'Pending dock attach detected: auto-navigating to Monitor mode');
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute<void>(
+            builder: (_) => MonitorModeScreen(
+              vm: vm,
+              authToken: authToken,
+            ),
           ),
-        ),
-      );
+        );
+      } else {
+        Navigator.of(context).pushReplacement(
+          MaterialPageRoute<void>(
+            builder: (_) => DashboardScreen(
+              student: student,
+              vm: vm,
+              guacAuthToken: authToken,
+            ),
+          ),
+        );
+      }
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -258,10 +314,22 @@ class _LoginScreenState extends State<LoginScreen> {
                       return null;
                     },
                   ),
-                  const SizedBox(height: 20),
+                  const SizedBox(height: 8),
+
+                  CheckboxListTile(
+                    value: _keepMeSignedIn,
+                    onChanged: (val) {
+                      setState(() => _keepMeSignedIn = val ?? true);
+                    },
+                    title: const Text('Keep me signed in', style: TextStyle(fontSize: 14)),
+                    contentPadding: EdgeInsets.zero,
+                    controlAffinity: ListTileControlAffinity.leading,
+                    dense: true,
+                  ),
+                  const SizedBox(height: 12),
 
                   FilledButton(
-                    onPressed: _isLoading ? null : _handleLogin,
+                    onPressed: _isLoading ? null : () => _handleLogin(),
                     style: FilledButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 14),
                     ),

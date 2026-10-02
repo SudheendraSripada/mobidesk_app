@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../config/app_config.dart';
 import 'developer_tools_screen.dart';
+import 'system_check_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -122,6 +123,25 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
+
+                ListTile(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    side: BorderSide(color: colorScheme.outlineVariant),
+                  ),
+                  leading: const Icon(Icons.fact_check_outlined),
+                  title: const Text('System Check'),
+                  subtitle: const Text('Validate USB, hardware encoder, FGS, and runtime prerequisites'),
+                  trailing: const Icon(Icons.chevron_right_rounded),
+                  onTap: () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const SystemCheckScreen(),
+                      ),
+                    );
+                  },
+                ),
+                const SizedBox(height: 12),
 
                 ListTile(
                   shape: RoundedRectangleBorder(

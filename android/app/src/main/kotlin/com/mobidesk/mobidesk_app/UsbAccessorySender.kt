@@ -6,6 +6,7 @@ import java.io.OutputStream
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.thread
@@ -58,6 +59,8 @@ class UsbAccessorySender {
         private set
 
     private val configQueued = AtomicBoolean(false)
+
+    val droppedFramesCount = AtomicLong(0L)
 
     var onDisconnected: (() -> Unit)? = null
 
@@ -224,8 +227,11 @@ class UsbAccessorySender {
         if (isKeyframe) {
             // Keyframe takes immediate precedence: replace any pending frame
             // and cache it for instant delivery to reconnecting clients
+            val prev = pendingVideoFrame.getAndSet(packet)
+            if (prev != null) {
+                droppedFramesCount.incrementAndGet()
+            }
             cachedKeyframe = packet
-            pendingVideoFrame.set(packet)
         } else {
             // Non-keyframe (P-frame): Zero-queue drop logic.
             // If the pending slot is already occupied by a critical KEYFRAME, DROP THIS NON-KEYFRAME
@@ -235,9 +241,13 @@ class UsbAccessorySender {
                 val current = pendingVideoFrame.get()
                 if (current != null && (current.flags.toInt() and FramingProtocol.FLAG_KEYFRAME.toInt()) != 0) {
                     // Critical keyframe pending; drop this non-keyframe
+                    droppedFramesCount.incrementAndGet()
                     return
                 }
                 if (pendingVideoFrame.compareAndSet(current, packet)) {
+                    if (current != null) {
+                        droppedFramesCount.incrementAndGet()
+                    }
                     break
                 }
             }

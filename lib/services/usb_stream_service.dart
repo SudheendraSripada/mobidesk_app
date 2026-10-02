@@ -184,4 +184,149 @@ class UsbStreamService {
       return false;
     }
   }
+
+  /// Fetches real-time encoder and streaming statistics.
+  static Future<Map<String, dynamic>> getStreamStats() async {
+    try {
+      final res = await _channel.invokeMapMethod<String, dynamic>('getStreamStats');
+      return res ??
+          {
+            'fps': 0.0,
+            'kbps': 0,
+            'totalFrames': 0,
+            'droppedFrames': 0,
+            'keyframes': 0,
+            'keyframeRequests': 0,
+            'width': 1280,
+            'height': 720,
+            'isStreaming': false,
+            'isFallback': false,
+            'fallbackNotice': '',
+            'fgsType': 0,
+          };
+    } on MissingPluginException {
+      return {
+        'fps': 0.0,
+        'kbps': 0,
+        'totalFrames': 0,
+        'droppedFrames': 0,
+        'keyframes': 0,
+        'keyframeRequests': 0,
+        'width': 1280,
+        'height': 720,
+        'isStreaming': false,
+        'isFallback': false,
+        'fallbackNotice': '',
+        'fgsType': 0,
+      };
+    } catch (_) {
+      return {
+        'fps': 0.0,
+        'kbps': 0,
+        'totalFrames': 0,
+        'droppedFrames': 0,
+        'keyframes': 0,
+        'keyframeRequests': 0,
+        'width': 1280,
+        'height': 720,
+        'isStreaming': false,
+        'isFallback': false,
+        'fallbackNotice': '',
+        'fgsType': 0,
+      };
+    }
+  }
+
+  /// Updates Presentation display overlay status (connecting spinner or error with countdown).
+  static Future<bool> updatePresentationStatus(String? errorText, {int countdown = 0}) async {
+    try {
+      final res = await _channel.invokeMethod<bool>('updatePresentationStatus', {
+        'errorText': errorText,
+        'countdown': countdown,
+      });
+      return res ?? false;
+    } on MissingPluginException {
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Updates Presentation display WebView URL when Guacamole token/session changes.
+  static Future<bool> updatePresentationSessionUrl(String url) async {
+    try {
+      final res = await _channel.invokeMethod<bool>('updatePresentationSessionUrl', {
+        'url': url,
+      });
+      return res ?? false;
+    } on MissingPluginException {
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Requests an immediate IDR keyframe from the encoder.
+  static Future<bool> requestKeyframe() async {
+    try {
+      final res = await _channel.invokeMethod<bool>('requestKeyframe');
+      return res ?? false;
+    } on MissingPluginException {
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Checks if a dock attachment occurred while unauthenticated or prior to screen load.
+  static Future<bool> hasPendingDockAttach({bool consume = false}) async {
+    try {
+      final res = await _channel.invokeMethod<bool>('hasPendingDockAttach', {
+        'consume': consume,
+      });
+      return res ?? false;
+    } on MissingPluginException {
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Clears any pending dock attach intent.
+  static Future<bool> clearPendingDockAttach() async {
+    try {
+      final res = await _channel.invokeMethod<bool>('clearPendingDockAttach');
+      return res ?? false;
+    } on MissingPluginException {
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Runs a single native system check.
+  static Future<Map<String, dynamic>> runSingleSystemCheck(String checkKey) async {
+    try {
+      final res = await _channel.invokeMapMethod<String, dynamic>('runSystemCheck', {
+        'check': checkKey,
+      });
+      return res ?? {'pass': false, 'detail': 'No response from native system check'};
+    } on MissingPluginException {
+      return {'pass': false, 'detail': 'MissingPluginException (Native handler not attached)'};
+    } catch (e) {
+      return {'pass': false, 'detail': 'Check error: $e'};
+    }
+  }
+
+  /// Runs all 11 native system checks and returns results map.
+  static Future<Map<String, dynamic>> runAllSystemChecks() async {
+    try {
+      final res = await _channel.invokeMapMethod<String, dynamic>('runAllSystemChecks');
+      return res ?? {};
+    } on MissingPluginException {
+      return {};
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
 }

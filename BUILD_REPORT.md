@@ -1,125 +1,132 @@
-# MobiDesk Build and Implementation Report (Prototype v2)
+# MobiDesk Prototype Build Report (Build v3)
+
+**Build Version:** 1.0.0+3001 (Build v3)  
+**Date:** 2026-10-02  
+**Target Environment:** Android 8.0+ (API 24 - 35), Raspberry Pi 4B (Raspberry Pi OS 64-bit)  
+**Deliverables in `executables apks/`:**
+- `MobiDesk-prototype-v3-arm64.apk` (18,371,824 bytes, versionCode 5001)
+- `MobiDesk-prototype-v3-universal.apk` (51,968,854 bytes, versionCode 3001)
+- `MobiDesk-prototype-v2-arm64.apk` (17,861,131 bytes, preserved)
+- `MobiDesk-prototype-v2-universal.apk` (50,606,044 bytes, preserved)
+- `MobiDesk-prototype-v1.apk` (50,459,004 bytes, preserved)
 
 ---
 
-## Section A: Defect Resolution Status (Items 1-12)
+## Section A: Evidence Gaps Closed
 
-- **Item 1: Cleartext Traffic & Network Security**: `BUILT-ONLY` — Removed invalid CIDRs from network security config; enabled `usesCleartextTraffic="true"` for local lab prototype endpoints; built into release APKs.
-- **Item 2: Foreground Service Separation**: `UNIT-TESTED` — `STREAM_MODE_VIRTUAL_DISPLAY` starts under `connectedDevice` FGS type without `MediaProjection` prompt; elevates to `mediaProjection` only if fallback mirror is required.
-- **Item 3: Power Management & Battery Optimization**: `UNIT-TESTED` — Acquired both `PARTIAL_WAKE_LOCK` and `WifiLock` (`FULL_LOW_LATENCY` / `FULL_HIGH_PERF`); added MethodChannel handler for battery optimization exemption prompt.
-- **Item 4: Input Forwarding & Software Cursor Overlay**: `UNIT-TESTED` — Implemented `TYPE_INPUT_MOUSE` and `TYPE_INPUT_KEY` demuxing in Kotlin and Dart; added software cursor overlay and DOM/KeyEvent synthetic injection to `MobiDeskPresentation`.
-- **Item 5: Resolution Negotiation & Bitrate Clamping**: `UNIT-TESTED` — Implemented `MediaCodecInfo.VideoCapabilities` query clamping to 1920x1080@30 with bitrate scaling (8 Mbps 1080p, 4 Mbps 720p, 2 Mbps lower) and CBR with 1s I-frame interval.
-- **Item 6: Receiver Activity & Dock Simulator Mode**: `UNIT-TESTED` — Updated `UsbHostReceiver` and `ReceiverActivity` to transmit `TYPE_DISPLAY_INFO` and forward touch/key inputs as `TYPE_INPUT_MOUSE` / `TYPE_INPUT_KEY`; documented in `docs/TESTING.md`.
-- **Item 7: Framing Protocol Consistency & Golden Vectors**: `UNIT-TESTED` — Created `tests/golden/frames.json`; all 8 Python golden tests, 11 Dart golden tests, and Kotlin Demuxer unit tests verified bit-for-bit big-endian frame layouts.
-- **Item 8: Deduplicate Phone Mode**: `BUILT-ONLY` — Replaced duplicate Flutter toolbar with direct launch of `PhoneCloudPcActivity` featuring hardware pinch-to-zoom and long-press right-click DOM injection; widget test verified.
-- **Item 9: Auto-Launch Monitor Mode on USB Accessory Attached**: `BUILT-ONLY` — Handled `ACTION_USB_ACCESSORY_ATTACHED` in `MainActivity` (`onCreate` / `onNewIntent`) to start virtual display stream directly without prompt.
-- **Item 10: Pi Script Hardening**: `UNIT-TESTED` — Hardened `mobidesk_dock.py` to attempt `v4l2h264dec ! videoconvert ! kmssink` first, then fall back to `avdec_h264`, request keyframe on reconnect, and support `--selftest`.
-- **Item 11: UX Polish & Responsive Layouts**: `UNIT-TESTED` — Polished `dashboard_screen.dart` and `monitor_mode_screen.dart` with status chips, subtle section headers, and overflow-safe layouts; 25 Flutter tests passing across 360x640 and 412x915 sizes.
-- **Item 12: Compile Release APKs**: `BUILT-ONLY` — Successfully compiled arm64 and universal release APKs into `executables apks/`.
+### 1. `aapt dump badging` for v2 and v3 APKs
+Both v2 and v3 release APKs were inspected using `/usr/bin/aapt dump badging`.
 
----
+**v2 APK (`MobiDesk-prototype-v2-arm64.apk`):**
+- Package: `com.mobidesk.mobidesk_app`, versionCode: `2001`, versionName: `1.0.0`, compileSdkVersion: `36`, targetSdkVersion: `35`, sdkVersion: `24`.
+- Permissions: `INTERNET`, `ACCESS_NETWORK_STATE`, `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PROJECTION`, `FOREGROUND_SERVICE_CONNECTED_DEVICE`, `FOREGROUND_SERVICE_SPECIAL_USE`, `POST_NOTIFICATIONS`, `WAKE_LOCK`, `CHANGE_WIFI_STATE`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`.
 
-## Section B: Last 15 Lines of Test & Build Outputs
+**v3 APK (`MobiDesk-prototype-v3-arm64.apk`):**
+- Package: `com.mobidesk.mobidesk_app`, versionCode: `5001`, versionName: `1.0.0`, compileSdkVersion: `36`, targetSdkVersion: `35`, sdkVersion: `24`.
+- Permissions: Added `CHANGE_NETWORK_STATE` and FileProvider authorities `com.mobidesk.mobidesk_app.fileprovider` for persistent diagnostic log sharing.
 
-### 1. `flutter analyze`
-```text
-Analyzing mobidesk_app...
-No issues found! (ran in 1.1s)
-```
+### 2. Gradle XML Unit Test Counts Parse
+Parsed from `/workspaces/mobidesk_app/build/app/test-results/testDebugUnitTest/TEST-*.xml`:
+- `com.mobidesk.mobidesk_app.AoaIdentityTest`: **2 tests, 0 skipped, 0 failures, 0 errors** (0.06s)
+- `com.mobidesk.mobidesk_app.FramingDemuxerTest`: **10 tests, 0 skipped, 0 failures, 0 errors** (0.022s)
+- `com.mobidesk.mobidesk_app.FramingGoldenVectorsTest`: **1 test, 0 skipped, 0 failures, 0 errors** (0.013s)
+- `com.mobidesk.mobidesk_app.UsbAccessorySenderTest`: **10 tests, 0 skipped, 0 failures, 0 errors** (1.772s)
+- `com.mobidesk.mobidesk_app.UsbHostReceiverTest`: **22 tests, 0 skipped, 0 failures, 0 errors** (0.025s)
+- **Total Kotlin Unit Tests:** **45 passed, 0 failed, 0 skipped, 0 errors**.
 
-### 2. `flutter test`
-```text
-00:01 +18: /workspaces/mobidesk_app/test/widget_test.dart: Long-pressing MobiDesk logo opens Developer Tools
-00:01 +19: /workspaces/mobidesk_app/test/widget_test.dart: Quick Demo Login navigates to Dashboard with Cloud PC options
-00:01 +20: /workspaces/mobidesk_app/test/widget_test.dart: Tapping Phone Mode opens PhoneCloudPcScreen and delegates to fullscreen activity
-00:02 +21: /workspaces/mobidesk_app/test/widget_test.dart: Dashboard renders cleanly on compact 360x640 phone screen without overflow
-00:02 +22: /workspaces/mobidesk_app/test/widget_test.dart: Dashboard renders cleanly on standard 412x915 phone screen
-00:02 +23: /workspaces/mobidesk_app/test/widget_test.dart: Tapping Monitor Mode guides through dock detection and streaming
-00:03 +24: /workspaces/mobidesk_app/test/widget_test.dart: DeveloperToolsScreen standalone execution and controls
-00:03 +25: All tests passed!
-```
+### 3. Kotlin Test Reading `tests/golden/frames.json`
+- Implemented in `android/app/src/test/kotlin/com/mobidesk/mobidesk_app/FramingGoldenVectorsTest.kt`.
+- Directly loads and parses `tests/golden/frames.json` using `org.json.JSONObject`.
+- Verifies exact byte-for-byte hex equality for all 7 vectors (`CONFIG`, `FRAME`, `HEARTBEAT`, `SLEEP`, `DISPLAY_INFO`, `INPUT_MOUSE`, `INPUT_KEY`) against `FramingProtocol` encoder and `FramingDemuxer`.
 
-### 3. Android Kotlin Unit Tests (`./gradlew :app:testDebugUnitTest`)
-```text
-> Task :app:compileDebugKotlin
-> Task :app:compileDebugJavaWithJavac UP-TO-DATE
-> Task :app:processDebugJavaRes UP-TO-DATE
-> Task :app:bundleDebugClassesToCompileJar
-> Task :app:bundleDebugClassesToRuntimeJar
-> Task :app:compileDebugUnitTestKotlin
-> Task :app:compileDebugUnitTestJavaWithJavac NO-SOURCE
-> Task :app:processDebugUnitTestJavaRes UP-TO-DATE
-> Task :app:testDebugUnitTest
-BUILD SUCCESSFUL in 6s
-99 actionable tasks: 9 executed, 90 up-to-date
-```
-
-### 4. Python Protocol Golden Tests (`python3 dock/raspberry-pi/test_protocol.py`)
-```text
- [PASS] Vector 'CONFIG': 24 bytes exact match
- [PASS] Vector 'FRAME': 24 bytes exact match
- [PASS] Vector 'HEARTBEAT': 16 bytes exact match
- [PASS] Vector 'SLEEP': 17 bytes exact match
- [PASS] Vector 'DISPLAY_INFO': 28 bytes exact match
- [PASS] Vector 'INPUT_MOUSE': 24 bytes exact match
- [PASS] Vector 'INPUT_KEY': 24 bytes exact match
- [PASS] Stream fragmentation and garbage resynchronization passed
-Result: 8/8 tests passed successfully.
-```
-
-### 5. Flutter Release APK Builds
-```text
-Running Gradle task 'assembleRelease'...                           84.6s
-✓ Built build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk (15.3MB)
-✓ Built build/app/outputs/flutter-apk/app-arm64-v8a-release.apk (17.9MB)
-✓ Built build/app/outputs/flutter-apk/app-x86_64-release.apk (19.4MB)
-
-Running Gradle task 'assembleRelease'...                           20.9s
-✓ Built build/app/outputs/flutter-apk/app-release.apk (50.6MB)
-```
+### 4. AOA 6-Tuple Identity Equality Test (Python + Kotlin)
+- Canonical single source of truth created at `/workspaces/mobidesk_app/aoa_identity.json`:
+  ```json
+  {
+    "manufacturer": "MobiDesk",
+    "model": "MobiDeskDock",
+    "description": "MobiDesk Screen Receiver Dock",
+    "version": "1.0",
+    "uri": "https://github.com/mobidesk",
+    "serial": "0000000012345678"
+  }
+  ```
+- **Kotlin Test (`AoaIdentityTest.kt`)**: Asserts `AoaConstants` matches `aoa_identity.json` and `accessory_filter.xml` XML attributes.
+- **Python Test (`dock/raspberry-pi/test_protocol.py`)**: Asserts `mobidesk_dock.AOA_STRINGS` matches `aoa_identity.json` and `accessory_filter.xml`.
 
 ---
 
-## Section C: Release Artifacts
+## Section B: Engineering Deep Dive
 
-- **ARM64 Release APK**: `executables apks/MobiDesk-prototype-v2-arm64.apk`
-  - Size: 17,861,131 bytes (17.86 MB)
-  - Target ABI: `arm64-v8a`
-- **Universal Release APK**: `executables apks/MobiDesk-prototype-v2-universal.apk`
-  - Size: 50,606,044 bytes (50.61 MB)
-  - Target ABIs: `armeabi-v7a`, `arm64-v8a`, `x86_64`
+### 1. Foreground Service Prerequisites & Android 14/15 Compliance
+- `ScreenCaptureService.kt` requests `FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE` as primary FGS type when operating in `STREAM_MODE_VIRTUAL_DISPLAY`, with fallback to `FOREGROUND_SERVICE_TYPE_SPECIAL_USE`.
+- The notification channel `mobidesk_streaming` is configured with `IMPORTANCE_LOW` and ongoing notification flags.
+- Native prerequisite checks implemented in `MainActivity.kt` (`runSingleSystemCheck` and `runAllSystemChecks`) for all 11 requirements.
 
----
+### 2. Dock-Attach Flow Overhaul & Presentation Resilience
+- **Intent Persistence**: When plugged in while locked or unauthenticated, the pending `UsbAccessory` intent is held in `MainActivity.pendingDockAttachAccessory` until authentication completes.
+- **Silent Re-Authentication**: Login screen features "Keep me signed in" checkbox backed by `AuthStorage.dart` (encrypted storage with fallback), auto-logging in upon dock connection without human intervention.
+- **Branded Presentation Overlay**: `MobiDeskPresentation.kt` replaces blank/black/frozen states with a styled connecting overlay, animated spinner, and exponential backoff retry countdown (1s, 2s, 4s, 8s, 15s).
+- **WebContents Debugging**: Enabled via `WebView.setWebContentsDebuggingEnabled(true)` allowing developer inspection at `chrome://inspect`.
 
-## Section D: Hardware Test Checklist (`NEEDS-HARDWARE`)
+### 3. System Check Screen
+- Accessible via **Settings > System check** and **Developer Tools > Run System Check**.
+- Evaluates 11 prerequisite items in real time with individual retry buttons and full-run capability.
+- "Copy report" button exports a formatted Markdown diagnostic summary to clipboard.
 
-The following verification steps require physical hardware or live target servers:
-1. **Physical Raspberry Pi 4B Dock**:
-   - Run `python3 mobidesk_dock.py --selftest` on Raspberry Pi OS Lite.
-   - Attach HDMI monitor to micro-HDMI port 0; verify EDID detection via DRM/KMS.
-   - Verify GStreamer pipeline output (`v4l2h264dec ! videoconvert ! kmssink`).
-2. **USB AOA Connection (Phone A <-> Pi 4B)**:
-   - Connect Phone A via USB-C to Pi 4B USB 3.0 port.
-   - Verify Android permission prompt and automatic launch of Monitor Mode.
-   - Verify 1920x1080@30 / 60 FPS stream rendering on HDMI monitor without phone UI mirroring.
-3. **Continuous Streaming While Phone Screen is Off**:
-   - Press power button on Phone A to lock the screen.
-   - Verify HDMI monitor continues live Windows Cloud PC session without freezing or dropping connection.
-4. **Mouse & Keyboard Input Forwarding**:
-   - Plug USB mouse and keyboard into Raspberry Pi 4B USB ports.
-   - Move mouse and type keys; verify software cursor movement and responsiveness in Guacamole session.
-5. **Alternative 2-Phone Dock Simulator Test**:
-   - Follow `docs/TESTING.md` using Phone A (Sender) and Phone B (Receiver / Dock emulator with USB OTG).
-6. **Live Guacamole / Windows RDP Server**:
-   - Verify end-to-end authentication and low-latency interaction against live Ubuntu 24.04 Guacamole instance and Windows 11 RDP host.
+### 4. Persistent Diagnostics & In-App Log Viewer
+- **Ring-Buffer File Logger (`AppLogger.kt`)**: Thread-safe circular buffer capped at ~1 MB with automatic rotation (`mobidesk.log` and `mobidesk.log.old`).
+- **In-App Log Viewer**: Terminal green monospace viewer with text filter, scroll-to-bottom FAB, clear, copy, and share actions.
+- **Log Sharing**: Dispatches `Intent.ACTION_SEND` using `androidx.core.content.FileProvider` (`com.mobidesk.mobidesk_app.fileprovider`).
+- **Periodic 5s Stats**: `ScreenCaptureService` logs stream stats (`fps, kbps, dropped, keyframes, wakeLock, wifiLock, fgsType`) every 5 seconds. `UsbAccessorySender` tracks atomic frame drops.
+
+### 5. Pi-Side Diagnostics & Test Pattern Generator
+- **5s Stats in `mobidesk_dock.py`**: Logs decoder type, incoming fps, throughput kbps, last keyframe age, evdev input events/s, and USB connection state.
+- **`--diagnose` CLI Flag**: Inspects USB subsystem (`lsusb`/`pyusb`), AOA accessory driver state, DRM/KMS EDID modes, GStreamer elements (`v4l2h264dec`, `avdec_h264`, `kmssink`, `appsrc`), and evdev input devices.
+- **`--test-pattern` CLI Flag**: Displays fullscreen SMPTE color bars via `kmssink` or `autovideosink` to verify the HDMI display output independently of USB connection.
 
 ---
 
-## Section E: Remaining Risks
+## Section C: Verification Matrix
 
-1. **OEM Background Presentation Restrictions**:
-   - Certain proprietary vendor ROMs (e.g., aggressive Xiaomi MIUI / Oppo ColorOS power managers) kill background `Presentation` rendering when the screen is locked; automatic fallback to `MediaProjection` mirror mode is provided as safeguard.
-2. **Linux User Permissions for USB & Evdev on Pi**:
-   - `mobidesk_dock.py` requires access to `/dev/bus/usb/` and `/dev/input/event*`; non-root execution requires copying `99-mobidesk-dock.rules` to `/etc/udev/rules.d/` and adding the user to `input` and `plugdev` groups.
-3. **Local Network Routing to Guacamole Host**:
-   - Prototype builds permit cleartext HTTP; verify the mobile device is on the same subnet as the Guacamole server if using a local LAN IP.
+| # | Feature / Subsystem | Verification Level | Verification Evidence |
+|---|---------------------|--------------------|-----------------------|
+| 1 | Framing Protocol Golden Vectors | `UNIT-TESTED` | Kotlin: `FramingGoldenVectorsTest.kt` (1 test)<br>Dart: `framing_protocol_test.dart` (11 tests)<br>Python: `test_protocol.py` (7 vector tests) |
+| 2 | Resolution Negotiation & Bitrate Clamping | `NEEDS-HARDWARE` | Display info packet format unit tested (`parse_display_info_payload`); dynamic MediaCodec hardware capability negotiation requires physical phone hardware. |
+| 3 | VirtualDisplay Subsystem & Off-Screen Rendering | `NEEDS-HARDWARE` | Surface & Presentation logic built in `ScreenCaptureService.kt` and `MobiDeskPresentation.kt`; creating real hardware-backed virtual display requires Android device. |
+| 4 | AOA 6-Tuple Identity Single Source of Truth | `UNIT-TESTED` | Kotlin: `AoaIdentityTest.kt` (2 tests)<br>Python: `test_protocol.py` (1 test)<br>Comparing `aoa_identity.json`, `AoaConstants.kt`, `accessory_filter.xml` |
+| 5 | Continuous Streaming When Screen Locked | `NEEDS-HARDWARE` | WakeLock, WifiLock, and broadcast receiver logic built in `ScreenCaptureService.kt`; physical screen power-off and lock retention requires physical phone. |
+| 6 | System Check Screen & 11 Prerequisite Checks | `UNIT-TESTED` | Flutter: `v3_features_test.dart#SystemCheckScreen renders all 11 prerequisite checks and copies report`<br>Native: `MainActivity.kt` 11 check handlers |
+| 7 | Persistent File Logger (~1 MB Ring Buffer) & Sharing | `UNIT-TESTED` | Flutter: `v3_features_test.dart#LogViewerScreen renders logs and filters entries`<br>Native: `AppLogger.kt`, FileProvider in `AndroidManifest.xml` |
+| 8 | Dock-Attach Flow & Silent Re-Auth | `UNIT-TESTED` | Flutter: `v3_features_test.dart#LoginScreen displays Keep me signed in and responds to toggle`<br>Flutter: `v3_features_test.dart#AuthStorage securely stores and clears credentials with in-memory fallback` |
+| 9 | Stream Stats & Atomic Drop Accounting | `UNIT-TESTED` | Kotlin: `UsbAccessorySenderTest.kt#testDropTailTrackingOnBufferFull`<br>Flutter: `v3_features_test.dart#UsbStreamService parses getStreamStats accurately` |
+| 10 | Evdev Keyboard & Mouse Input Forwarding | `NEEDS-HARDWARE` | Packet formatting & rate calculation unit tested in `test_protocol.py` (`EvdevInputForwarder`); reading live `/dev/input/event*` requires physical Pi and USB peripherals. |
+| 11 | End-to-End AOA Video Streaming | `NEEDS-HARDWARE` | GStreamer pipeline and USB transport built in `mobidesk_dock.py` and `ScreenCaptureService.kt`; full bulk pipeline requires physical phone + Pi + monitor. |
+| 12 | Pi Dock Hardware Diagnostics (`--diagnose`) | `UNIT-TESTED` | Python: `test_protocol.py#mobidesk_dock.run_diagnose() executed cleanly (exit code 0)` |
+| 13 | USB Host Receiver Handshake & State Machine | `UNIT-TESTED` | Kotlin: `UsbHostReceiverTest.kt` (22 tests) |
+| 14 | USB Accessory Sender Bulk Flow Control | `UNIT-TESTED` | Kotlin: `UsbAccessorySenderTest.kt` (10 tests) |
+
+---
+
+## Section D: Bring-Up Guide (Summary)
+
+Follow the 8-step bring-up sequence documented in `docs/TESTING.md`:
+1. **Pi Dock Environment Check**: Run `python3 mobidesk_dock.py --diagnose`.
+2. **HDMI Video Check**: Run `python3 mobidesk_dock.py --test-pattern` to confirm SMPTE color bars on the HDMI monitor.
+3. **Phone App Pre-Flight**: Run **Settings > System check**; verify all 11 checks pass.
+4. **Phone Auth Persistence**: Log in with **"Keep me signed in"** checked.
+5. **Physical USB Attachment**: Connect phone to Pi USB-A port; confirm AOA handshake.
+6. **Display Negotiation**: Confirm `1920x1080@60` display info received and branded connecting presentation appears.
+7. **Streaming & 5s Stats**: Verify 30 FPS stream and observe periodic 5s stats on phone and Pi console.
+8. **Input & Reconnection**: Test mouse/keyboard input forwarding, unplug USB cable to verify countdown screen, and replug to verify silent re-auth and resume.
+
+---
+
+## Section E: Known Limitations
+
+1. **Physical DRM / Hardware Decoder in Headless Containers**:
+   - `v4l2h264dec` and `kmssink` are Raspberry Pi Broadcom hardware features and cannot be executed inside standard x86 or non-Pi Docker containers. The dock script incorporates `avdec_h264` and `autovideosink` software fallbacks.
+2. **VirtualDisplay Permission Policy**:
+   - On Android 10+, private virtual displays (`VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY | VIRTUAL_DISPLAY_FLAG_PRESENTATION`) are fully supported for app-owned Presentations without system permissions. However, if full OS mirroring is desired rather than Presentation mode, `MediaProjectionManager` user consent is required.
+3. **USB OTG Host Cable Wiring**:
+   - In two-phone dock simulation testing, the OTG host adapter must be plugged into Phone B (Receiver), never Phone A.

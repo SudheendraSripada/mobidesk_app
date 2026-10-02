@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
+import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobidesk_app/main.dart';
 import 'package:mobidesk_app/screens/developer_tools_screen.dart';
@@ -9,6 +11,8 @@ void main() {
 
   setUp(() {
     mockStreaming = false;
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform({});
+
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(const MethodChannel('com.mobidesk/stream'), (
           MethodCall methodCall,
@@ -42,6 +46,34 @@ void main() {
             return true;
           } else if (methodCall.method == 'startPhoneCloudPc') {
             return true;
+          } else if (methodCall.method == 'getStreamStats') {
+            return {
+              'fps': 30.0,
+              'kbps': 4000,
+              'totalFrames': 150,
+              'droppedFrames': 0,
+              'keyframes': 5,
+              'keyframeRequests': 1,
+              'width': 1920,
+              'height': 1080,
+              'isStreaming': mockStreaming,
+              'isFallback': false,
+              'fallbackNotice': '',
+              'fgsType': 0,
+            };
+          } else if (methodCall.method == 'hasPendingDockAttach' ||
+              methodCall.method == 'checkAutoLaunchMonitor') {
+            return false;
+          } else if (methodCall.method == 'clearPendingDockAttach' ||
+              methodCall.method == 'updatePresentationStatus' ||
+              methodCall.method == 'updatePresentationSessionUrl' ||
+              methodCall.method == 'requestKeyframe' ||
+              methodCall.method == 'clearLogs' ||
+              methodCall.method == 'shareLogs' ||
+              methodCall.method == 'logMessage') {
+            return true;
+          } else if (methodCall.method == 'getLogs') {
+            return '[2026-10-02 12:00:00.000] [I/Test] Initialized mock logs\n';
           }
           return null;
         });

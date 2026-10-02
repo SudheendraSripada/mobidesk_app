@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 
 import '../models/vm_connection.dart';
+import '../services/app_logger.dart';
+import '../services/auth_storage.dart';
 import '../services/guacamole_service.dart';
 import '../services/usb_stream_service.dart';
 
@@ -32,10 +35,25 @@ class _MonitorModeScreenState extends State<MonitorModeScreen> {
   int _monitorFps = 60;
   bool _isLoading = false;
   bool _isBatteryOptIgnored = true;
+  String _currentAuthToken = '';
+
+  // Real-time stream stats
+  double _fps = 0.0;
+  int _kbps = 0;
+  int _totalFrames = 0;
+  int _droppedFrames = 0;
+  int _keyframesSent = 0;
+  String _fallbackNotice = '';
+
+  // Exponential backoff retry state: 1s, 2s, 4s, 8s, 15s
+  int _retryAttempt = 0;
+  final List<int> _backoffDelays = [1, 2, 4, 8, 15];
+  bool _isRetrying = false;
 
   @override
   void initState() {
     super.initState();
+    _currentAuthToken = widget.authToken;
     _checkHardwareAndStartFlow();
     _checkBatteryOptimization();
     _statusTimer = Timer.periodic(
@@ -111,24 +129,27 @@ class _MonitorModeScreenState extends State<MonitorModeScreen> {
   Future<void> _pollStatus() async {
     final status = await UsbStreamService.getUsbStatus();
     final hasAccessory = status['hasAccessory'] as bool? ?? false;
-    final isStreaming = status['isStreaming'] as bool? ?? false;
-    final isFallback = await UsbStreamService.isFallbackActive();
+    final stats = await UsbStreamService.getStreamStats();
+    final isStreaming = stats['isStreaming'] as bool? ?? false;
+    final isFallback = stats['isFallback'] as bool? ?? false;
 
     if (!mounted) return;
+
+    setState(() {
+      _fps = (stats['fps'] as num?)?.toDouble() ?? 0.0;
+      _kbps = (stats['kbps'] as num?)?.toInt() ?? 0;
+      _totalFrames = (stats['totalFrames'] as num?)?.toInt() ?? 0;
+      _droppedFrames = (stats['droppedFrames'] as num?)?.toInt() ?? 0;
+      _keyframesSent = (stats['keyframes'] as num?)?.toInt() ?? 0;
+      _fallbackNotice = (stats['fallbackNotice'] as String?) ?? '';
+      _isFallback = isFallback;
+    });
 
     if (_currentStep == DockFlowStep.connectDock && hasAccessory) {
       _onDockDetected();
     } else if (_currentStep == DockFlowStep.connectedStreaming) {
-      if (!isStreaming) {
-        setState(() {
-          _currentStep = hasAccessory
-              ? DockFlowStep.detectedReadingResolution
-              : DockFlowStep.connectDock;
-        });
-      } else {
-        setState(() {
-          _isFallback = isFallback;
-        });
+      if (!isStreaming && !_isRetrying) {
+        _handleStreamError('Screen streaming interrupted or disconnected');
       }
     }
   }
@@ -158,12 +179,15 @@ class _MonitorModeScreenState extends State<MonitorModeScreen> {
   }
 
   Future<void> _startDockStreaming() async {
+    if (_isRetrying) return;
     setState(() => _isLoading = true);
 
     final sessionUrl = GuacamoleService.buildClientUrl(
       connectionId: widget.vm.guacConnectionId,
-      authToken: widget.authToken,
+      authToken: _currentAuthToken,
     );
+
+    await UsbStreamService.updatePresentationStatus(null); // Clear any presentation error
 
     final success = await UsbStreamService.startMonitorStream(
       guacUrl: sessionUrl,
@@ -176,28 +200,81 @@ class _MonitorModeScreenState extends State<MonitorModeScreen> {
     setState(() => _isLoading = false);
 
     if (success) {
+      _retryAttempt = 0;
       final isFallback = await UsbStreamService.isFallbackActive();
       setState(() {
         _isFallback = isFallback;
         _currentStep = DockFlowStep.connectedStreaming;
       });
+      AppLogger.i('MonitorModeScreen', 'Dock streaming started successfully (${_monitorWidth}x$_monitorHeight @ $_monitorFps fps)');
     } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Failed to start monitor stream. Ensure USB accessory permission is granted.',
-          ),
-          backgroundColor: Colors.red,
-        ),
-      );
-      setState(() {
-        _currentStep = DockFlowStep.connectDock;
-      });
+      _handleStreamError('Failed to start monitor stream');
     }
   }
 
+  Future<void> _handleStreamError(String errorMsg) async {
+    if (_isRetrying) return;
+    _isRetrying = true;
+
+    AppLogger.w('MonitorModeScreen', 'Handling stream error: $errorMsg');
+
+    // 1. Attempt silent re-authentication with stored credentials first
+    final creds = await AuthStorage.getCredentials();
+    if (creds['username'] != null && creds['password'] != null) {
+      AppLogger.i('MonitorModeScreen', 'Attempting silent re-authentication with stored credentials...');
+      await UsbStreamService.updatePresentationStatus('Reconnecting Cloud PC session...', countdown: 3);
+      try {
+        final guacResult = await GuacamoleService.login(
+          username: creds['username']!,
+          password: creds['password']!,
+        );
+        final newToken = guacResult.authToken ?? 'DEMO_TOKEN_2026';
+        _currentAuthToken = newToken;
+        await AuthStorage.saveCredentials(
+          username: creds['username']!,
+          password: creds['password']!,
+          authToken: newToken,
+          keepSignedIn: true,
+        );
+        final newUrl = GuacamoleService.buildClientUrl(
+          connectionId: widget.vm.guacConnectionId,
+          authToken: newToken,
+        );
+        await UsbStreamService.updatePresentationSessionUrl(newUrl);
+        AppLogger.i('MonitorModeScreen', 'Silent re-auth succeeded, updated presentation session URL');
+      } catch (e) {
+        AppLogger.w('MonitorModeScreen', 'Silent re-auth attempt failed: $e');
+      }
+    }
+
+    // 2. Exponential backoff countdown: 1s, 2s, 4s, 8s, 15s
+    final delaySec = _backoffDelays[min(_retryAttempt, _backoffDelays.length - 1)];
+    _retryAttempt++;
+    AppLogger.w('MonitorModeScreen', 'Retrying in ${delaySec}s (attempt #$_retryAttempt)');
+
+    for (int c = delaySec; c > 0; c--) {
+      if (!mounted) {
+        _isRetrying = false;
+        return;
+      }
+      await UsbStreamService.updatePresentationStatus('Connection error. Retrying in ${c}s...', countdown: c);
+      await Future.delayed(const Duration(seconds: 1));
+    }
+
+    if (!mounted) {
+      _isRetrying = false;
+      return;
+    }
+
+    _isRetrying = false;
+    _startDockStreaming();
+  }
+
   Future<void> _stopDockStreaming() async {
+    _isRetrying = false;
+    _retryAttempt = 0;
     setState(() => _isLoading = true);
+    await UsbStreamService.updatePresentationStatus('Session disconnected by user', countdown: 0);
     await UsbStreamService.stopStream();
     if (mounted) {
       setState(() {
@@ -393,7 +470,27 @@ class _MonitorModeScreenState extends State<MonitorModeScreen> {
                 ),
                 Chip(
                   avatar: const Icon(Icons.speed_rounded, size: 16),
-                  label: Text('$_monitorFps FPS'),
+                  label: Text('${_fps > 0 ? _fps.toStringAsFixed(1) : _monitorFps} FPS'),
+                  backgroundColor: colorScheme.surfaceContainerHighest,
+                ),
+                Chip(
+                  avatar: const Icon(Icons.network_check_rounded, size: 16),
+                  label: Text('$_kbps kbps'),
+                  backgroundColor: colorScheme.surfaceContainerHighest,
+                ),
+                Chip(
+                  avatar: const Icon(Icons.layers_clear_rounded, size: 16),
+                  label: Text('Dropped: $_droppedFrames'),
+                  backgroundColor: colorScheme.surfaceContainerHighest,
+                ),
+                Chip(
+                  avatar: const Icon(Icons.key_rounded, size: 16),
+                  label: Text('Keyframes: $_keyframesSent'),
+                  backgroundColor: colorScheme.surfaceContainerHighest,
+                ),
+                Chip(
+                  avatar: const Icon(Icons.movie_creation_outlined, size: 16),
+                  label: Text('Frames: $_totalFrames'),
                   backgroundColor: colorScheme.surfaceContainerHighest,
                 ),
                 Chip(
@@ -409,7 +506,21 @@ class _MonitorModeScreenState extends State<MonitorModeScreen> {
                 ),
               ],
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 8),
+
+            TextButton.icon(
+              onPressed: () async {
+                await UsbStreamService.requestKeyframe();
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('IDR Keyframe requested'), duration: Duration(seconds: 1)),
+                  );
+                }
+              },
+              icon: const Icon(Icons.refresh_rounded, size: 16),
+              label: const Text('Force IDR Keyframe'),
+            ),
+            const SizedBox(height: 8),
 
             Card(
               elevation: 0,
@@ -519,7 +630,9 @@ class _MonitorModeScreenState extends State<MonitorModeScreen> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Presentation mode unavailable. Fallback Screen Mirror active (Phone lock unavailable in fallback mode).',
+                        _fallbackNotice.isNotEmpty
+                            ? _fallbackNotice
+                            : 'Presentation mode unavailable. Fallback Screen Mirror active (Phone lock unavailable in fallback mode).',
                         style: TextStyle(
                           color: Colors.orange[900],
                           fontSize: 12,

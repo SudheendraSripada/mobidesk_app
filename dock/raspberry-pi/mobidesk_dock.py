@@ -13,7 +13,7 @@ Acts as a dedicated USB Host over a Pi USB-A port:
 7. Reads evdev keyboard and mouse events, tracks an absolute cursor clamped to monitor size,
    and forwards them as TYPE_INPUT_MOUSE (6) and TYPE_INPUT_KEY (7) over USB bulk OUT.
 8. Gracefully handles USB disconnection/replug without restarting the service.
-9. Includes --selftest flag checking pyusb, GStreamer elements, DRM, and evdev.
+9. Includes --diagnose, --test-pattern, and --selftest flags for comprehensive brings-up & diagnostics.
 """
 
 import os
@@ -24,6 +24,8 @@ import struct
 import signal
 import logging
 import threading
+import subprocess
+import shutil
 
 try:
     import usb.core
@@ -280,6 +282,18 @@ class EvdevInputForwarder:
         self.button_mask = 0
         self.modifier_mask = 0
         self.threads = []
+        self._event_count = 0
+        self._event_lock = threading.Lock()
+
+    def record_event(self):
+        with self._event_lock:
+            self._event_count += 1
+
+    def get_and_reset_event_rate(self, elapsed_sec):
+        with self._event_lock:
+            count = self._event_count
+            self._event_count = 0
+        return (count / elapsed_sec) if elapsed_sec > 0 else 0.0
 
     def start(self):
         if evdev is None:
@@ -364,6 +378,7 @@ class EvdevInputForwarder:
                             pts_us=int(event.sec * 1_000_000 + event.usec)
                         )
                         self.send_callback(key_pkt)
+                        self.record_event()
 
                 elif event.type == ecodes.EV_SYN and mouse_moved:
                     norm_x = int((self.cursor_x / self.monitor_w) * 65535) if self.monitor_w > 0 else 0
@@ -377,6 +392,7 @@ class EvdevInputForwarder:
                         pts_us=int(event.sec * 1_000_000 + event.usec)
                     )
                     self.send_callback(mouse_pkt)
+                    self.record_event()
                     wheel_dx = 0
                     wheel_dy = 0
                     mouse_moved = False
@@ -496,6 +512,11 @@ class MobiDeskDock:
 
         accumulator = bytearray()
         last_heartbeat_time = time.time()
+        last_stats_time = time.time()
+        last_keyframe_time = None
+        frames_count = 0
+        bytes_received = 0
+        usb_state = "STREAMING"
 
         while self.running:
             try:
@@ -503,6 +524,7 @@ class MobiDeskDock:
                 data = ep_in.read(64 * 1024, timeout=2000)
                 if data:
                     accumulator.extend(data)
+                    bytes_received += len(data)
 
                 # Process all complete FramingProtocol frames in accumulator
                 while len(accumulator) >= HEADER_SIZE:
@@ -538,12 +560,33 @@ class MobiDeskDock:
 
                     if pkt_type in (TYPE_CONFIG, TYPE_FRAME) and len(payload) > 0:
                         self.gst.push_buffer(bytes(payload))
+                        if pkt_type == TYPE_FRAME:
+                            frames_count += 1
+                        if (flags & FLAG_KEYFRAME) != 0 or pkt_type == TYPE_CONFIG:
+                            last_keyframe_time = time.time()
                     elif pkt_type == TYPE_SLEEP:
                         is_asleep = payload[0] == 1 if len(payload) > 0 else False
                         logger.info("Received sleep state packet: is_asleep=%s", is_asleep)
                     elif pkt_type == TYPE_DISPLAY_INFO and len(payload) >= 12:
                         neg_w, neg_h, neg_fps = parse_display_info_payload(payload)
                         logger.info("Phone replied with negotiated display size: %dx%d@%d", neg_w, neg_h, neg_fps)
+
+                # Periodic 5s stats logging: decoder type, incoming fps, kbps, last keyframe age, input events/s, USB connection state
+                now = time.time()
+                if now - last_stats_time >= 5.0:
+                    dt = now - last_stats_time
+                    fps = frames_count / dt if dt > 0 else 0.0
+                    kbps = (bytes_received * 8.0) / (1000.0 * dt) if dt > 0 else 0.0
+                    kf_age = f"{now - last_keyframe_time:.1f}s" if last_keyframe_time is not None else "never"
+                    ev_rate = input_forwarder.get_and_reset_event_rate(dt)
+                    decoder_name = self.gst.active_decoder or "None"
+                    logger.info(
+                        "[5s DOCK STATS] decoder=%s | incoming_fps=%.1f | kbps=%.1f | last_keyframe_age=%s | input_events_per_sec=%.1f | usb_state=%s",
+                        decoder_name, fps, kbps, kf_age, ev_rate, usb_state
+                    )
+                    frames_count = 0
+                    bytes_received = 0
+                    last_stats_time = now
 
                 # Periodic heartbeat every 5 seconds to keep stream alive
                 if time.time() - last_heartbeat_time > 5.0:
@@ -554,7 +597,23 @@ class MobiDeskDock:
                     last_heartbeat_time = time.time()
 
             except usb.core.USBTimeoutError:
-                # Normal read timeout; request keyframe if needed
+                # Normal read timeout; check 5s stats and request keyframe if needed
+                now = time.time()
+                if now - last_stats_time >= 5.0:
+                    dt = now - last_stats_time
+                    fps = frames_count / dt if dt > 0 else 0.0
+                    kbps = (bytes_received * 8.0) / (1000.0 * dt) if dt > 0 else 0.0
+                    kf_age = f"{now - last_keyframe_time:.1f}s" if last_keyframe_time is not None else "never"
+                    ev_rate = input_forwarder.get_and_reset_event_rate(dt)
+                    decoder_name = self.gst.active_decoder or "None"
+                    logger.info(
+                        "[5s DOCK STATS] decoder=%s | incoming_fps=%.1f | kbps=%.1f | last_keyframe_age=%s | input_events_per_sec=%.1f | usb_state=%s",
+                        decoder_name, fps, kbps, kf_age, ev_rate, usb_state
+                    )
+                    frames_count = 0
+                    bytes_received = 0
+                    last_stats_time = now
+
                 try:
                     ep_out.write(create_heartbeat_packet(), timeout=500)
                 except Exception:
@@ -611,6 +670,237 @@ class MobiDeskDock:
             except Exception as e:
                 logger.warning("Error in main dock loop (recovering): %s", e)
                 time.sleep(1.5)
+
+
+def run_diagnose():
+    """
+    Performs comprehensive Pi-side dock hardware & driver diagnostics:
+    - Inspects USB devices via lsusb / pyusb
+    - Checks AOA driver/state
+    - Queries DRM/KMS EDID modes
+    - Checks GStreamer elements (v4l2h264dec, avdec_h264, kmssink, appsrc, etc.)
+    - Checks /dev/input/event* devices
+    """
+    print("=" * 65)
+    print("MobiDesk Raspberry Pi 4B Dock Hardware & Driver Diagnostics")
+    print("=" * 65)
+
+    # 1. Inspect USB Subsystem (lsusb / pyusb)
+    print("\n--- [1/5] USB Subsystem & Connected Devices ---")
+    lsusb_bin = shutil.which("lsusb")
+    if lsusb_bin:
+        try:
+            res = subprocess.run([lsusb_bin], capture_output=True, text=True, timeout=5)
+            if res.stdout.strip():
+                print(res.stdout.strip())
+            else:
+                print("lsusb returned empty device list.")
+        except Exception as e:
+            print(f"Failed to execute lsusb: {e}")
+    elif usb is not None:
+        try:
+            devs = list(usb.core.find(find_all=True))
+            for d in devs:
+                print(f"Bus {d.bus:03d} Device {d.address:03d}: ID {d.idVendor:04x}:{d.idProduct:04x}")
+            if not devs:
+                print("No USB devices detected via pyusb.")
+        except Exception as e:
+            print(f"Error enumerating USB devices via pyusb: {e}")
+    else:
+        print("[WARN] Neither lsusb nor pyusb available to inspect USB devices.")
+
+    # 2. Check AOA Driver & Accessory State
+    print("\n--- [2/5] Android Open Accessory (AOA 2.0) State ---")
+    aoa_found = False
+    android_vendor_found = False
+    if usb is not None:
+        try:
+            for dev in usb.core.find(find_all=True):
+                if dev.idVendor == AOA_VENDOR_ID and dev.idProduct in AOA_PRODUCT_IDS:
+                    print(f" [PASS] AOA Accessory Device active: VID={dev.idVendor:04x} PID={dev.idProduct:04x}")
+                    aoa_found = True
+                    break
+                elif dev.idVendor in (0x18D1, 0x04E8, 0x2717, 0x12D1, 0x22B8, 0x2A70):
+                    print(f" [INFO] Android phone found in normal USB mode: VID={dev.idVendor:04x} PID={dev.idProduct:04x}")
+                    android_vendor_found = True
+        except Exception as e:
+            print(f" [WARN] Error scanning for AOA devices: {e}")
+
+    if not aoa_found and not android_vendor_found:
+        print(" [INFO] No phone currently connected. Dock waiting for USB-A connection.")
+
+    # 3. DRM/KMS EDID Modes
+    print("\n--- [3/5] DRM/KMS HDMI Display & EDID Modes ---")
+    try:
+        drm_connectors = glob.glob('/sys/class/drm/card*-HDMI-*')
+        if not drm_connectors:
+            drm_connectors = glob.glob('/sys/class/drm/card*')
+
+        found_mode = False
+        for conn in drm_connectors:
+            conn_name = os.path.basename(conn)
+            status_file = os.path.join(conn, 'status')
+            mode_file = os.path.join(conn, 'modes')
+            edid_file = os.path.join(conn, 'edid')
+
+            status = "unknown"
+            if os.path.exists(status_file):
+                with open(status_file, 'r') as f:
+                    status = f.read().strip()
+
+            modes = []
+            if os.path.exists(mode_file):
+                with open(mode_file, 'r') as f:
+                    modes = [l.strip() for l in f if l.strip()]
+
+            has_edid = os.path.exists(edid_file) and os.path.getsize(edid_file) > 0
+            edid_status = f"EDID present ({os.path.getsize(edid_file)} bytes)" if has_edid else "No EDID"
+
+            if modes:
+                print(f" Connector {conn_name}: status={status}, modes={modes[:4]}, {edid_status}")
+                found_mode = True
+            elif status == "connected":
+                print(f" Connector {conn_name}: status=connected, {edid_status}")
+                found_mode = True
+
+        if not found_mode:
+            print(" [INFO] No physical HDMI display active via DRM sysfs; default fallback is 1920x1080@60.")
+    except Exception as e:
+        print(f" [WARN] Error reading DRM modes: {e}")
+
+    # 4. GStreamer Elements
+    print("\n--- [4/5] GStreamer Elements (Hardware & Software Fallback) ---")
+    gst_inspect_bin = shutil.which("gst-inspect-1.0")
+    elements_to_check = ['appsrc', 'h264parse', 'v4l2h264dec', 'avdec_h264', 'videoconvert', 'kmssink', 'autovideosink']
+
+    if Gst is not None:
+        Gst.init(None)
+        for elem in elements_to_check:
+            factory = Gst.ElementFactory.find(elem)
+            if factory is not None:
+                note = "(Pi Hardware Decoder)" if elem == 'v4l2h264dec' else "(DRM/KMS Direct Sink)" if elem == 'kmssink' else "(Standard)"
+                print(f" [PASS] GStreamer element '{elem:<14s}' available {note}")
+            else:
+                level = "[WARN]" if elem in ('v4l2h264dec', 'kmssink') else "[FAIL]"
+                print(f" {level} GStreamer element '{elem:<14s}' MISSING")
+    elif gst_inspect_bin:
+        for elem in elements_to_check:
+            res = subprocess.run([gst_inspect_bin, elem], capture_output=True, text=True)
+            if res.returncode == 0:
+                print(f" [PASS] GStreamer CLI element '{elem:<14s}' available")
+            else:
+                level = "[WARN]" if elem in ('v4l2h264dec', 'kmssink') else "[FAIL]"
+                print(f" {level} GStreamer CLI element '{elem:<14s}' MISSING")
+    else:
+        print(" [FAIL] GStreamer bindings (gi.repository.Gst) and gst-inspect-1.0 not installed.")
+
+    # 5. Linux /dev/input/event* Devices
+    print("\n--- [5/5] Input Subsystem (/dev/input/event*) ---")
+    input_nodes = sorted(glob.glob('/dev/input/event*'))
+    if evdev is not None:
+        try:
+            devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
+            if devices:
+                for dev in devices:
+                    caps = dev.capabilities()
+                    types = []
+                    if ecodes.EV_REL in caps or ecodes.EV_ABS in caps:
+                        types.append("Pointer/Mouse")
+                    if ecodes.EV_KEY in caps:
+                        types.append("Keyboard/Keys")
+                    type_str = ", ".join(types) if types else "Other"
+                    print(f" [PASS] {dev.path}: {dev.name} [{type_str}]")
+            else:
+                print(" [INFO] No evdev devices currently connected.")
+        except Exception as e:
+            print(f" [WARN] Error reading evdev devices: {e}")
+    elif input_nodes:
+        for node in input_nodes:
+            name_file = f"/sys/class/input/{os.path.basename(node)}/device/name"
+            name = "Unknown"
+            if os.path.exists(name_file):
+                try:
+                    with open(name_file) as f:
+                        name = f.read().strip()
+                except Exception:
+                    pass
+            print(f" [PASS] {node}: {name}")
+    else:
+        print(" [INFO] No /dev/input/event* nodes found.")
+
+    print("\n" + "=" * 65)
+    print("Diagnostics complete.")
+    print("=" * 65)
+    return 0
+
+
+def run_test_pattern():
+    """
+    Runs a standalone GStreamer pipeline outputting an SMPTE test pattern
+    to kmssink (or autovideosink) to verify HDMI display output independently of USB.
+    """
+    logger.info("Initializing MobiDesk HDMI test pattern generator...")
+
+    candidates = [
+        ("kmssink (DRM/KMS direct)", "videotestsrc pattern=smpte ! video/x-raw,width=1920,height=1080,framerate=60/1 ! kmssink sync=false"),
+        ("autovideosink", "videotestsrc pattern=smpte ! video/x-raw,width=1920,height=1080,framerate=60/1 ! videoconvert ! autovideosink sync=false"),
+        ("videoconvert fallback", "videotestsrc pattern=smpte ! videoconvert ! autovideosink")
+    ]
+
+    if Gst is not None:
+        Gst.init(None)
+        pipeline = None
+        chosen_label = None
+
+        for label, pipe_str in candidates:
+            try:
+                p = Gst.parse_launch(pipe_str)
+                ret = p.set_state(Gst.State.PLAYING)
+                if ret != Gst.StateChangeReturn.FAILURE:
+                    pipeline = p
+                    chosen_label = label
+                    break
+                else:
+                    p.set_state(Gst.State.NULL)
+            except Exception as e:
+                logger.debug("Test pattern candidate %s failed: %s", label, e)
+
+        if pipeline is None:
+            logger.error("Failed to start GStreamer test pattern on any sink.")
+            return 1
+
+        logger.info("Displaying SMPTE test pattern via %s. Press Ctrl+C to stop.", chosen_label)
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            logger.info("Stopping test pattern...")
+        finally:
+            pipeline.set_state(Gst.State.NULL)
+            logger.info("Test pattern terminated.")
+        return 0
+
+    # Fallback to gst-launch-1.0 CLI if python-gi not installed
+    gst_launch_bin = shutil.which("gst-launch-1.0")
+    if gst_launch_bin:
+        for label, pipe_str in candidates:
+            cmd = [gst_launch_bin] + pipe_str.split()
+            logger.info("Attempting CLI test pattern with %s: %s", label, " ".join(cmd))
+            try:
+                proc = subprocess.Popen(cmd)
+                try:
+                    proc.wait()
+                    return 0
+                except KeyboardInterrupt:
+                    proc.terminate()
+                    proc.wait()
+                    logger.info("Test pattern stopped.")
+                    return 0
+            except Exception as e:
+                logger.warning("CLI pipeline %s failed: %s", label, e)
+
+    logger.error("GStreamer is not available (neither python-gi nor gst-launch-1.0). Cannot display test pattern.")
+    return 1
 
 
 def run_selftest():
@@ -684,7 +974,11 @@ def run_selftest():
 
 
 if __name__ == '__main__':
-    if '--selftest' in sys.argv:
+    if '--diagnose' in sys.argv or '--diagnosis' in sys.argv:
+        sys.exit(run_diagnose())
+    elif '--test-pattern' in sys.argv:
+        sys.exit(run_test_pattern())
+    elif '--selftest' in sys.argv:
         sys.exit(run_selftest())
     dock = MobiDeskDock()
     dock.run()

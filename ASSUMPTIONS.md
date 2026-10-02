@@ -113,3 +113,45 @@ This document details all technical, architectural, and operational assumptions 
 3. **Developer Tools & Dual Phone Testing**:
    - Long-press on the MobiDesk logo in the AppBar opens Developer Tools.
    - Receiver Activity allows using Phone B as an emulated dock, sending `TYPE_DISPLAY_INFO` and forwarding touch/keyboard inputs as `TYPE_INPUT_MOUSE` and `TYPE_INPUT_KEY` to Phone A.
+
+---
+
+## 8. Prototype v3 Architecture & Reliability Enhancements
+
+1. **AOA Identity Single Source of Truth**:
+   - `aoa_identity.json` acts as the authoritative definition of the 6-tuple AOA identity (manufacturer, model, description, version, uri, serial).
+   - Kotlin `AoaConstants.kt`, Python `mobidesk_dock.AOA_STRINGS`, and `res/xml/accessory_filter.xml` strictly match this identity.
+   - Verified via automated unit tests in both Kotlin (`AoaIdentityTest.kt`) and Python (`test_protocol.py`).
+
+2. **Foreground Service Prerequisites & System Check Suite**:
+   - Android 14/15 target SDK 35 requires strict foreground service type declarations. `ScreenCaptureService` declares `connectedDevice`, `mediaProjection`, and `specialUse`.
+   - Native `MainActivity.kt` provides an 11-point system diagnostic suite (`runAllSystemChecks`), surfaced through Flutter UI at **Settings > System check**:
+     1. USB AOA Accessory Attached
+     2. MediaCodec H.264/AVC Hardware Encoder
+     3. VirtualDisplay Subsystem (1280x720 / 1920x1080)
+     4. Foreground Service (`connectedDevice` / FGS type)
+     5. Low-Latency WifiLock
+     6. Partial WakeLock
+     7. Post Notifications Permission
+     8. Battery Optimization Exemption
+     9. Internal Log Storage (~1 MB Ring Buffer)
+     10. Presentation Display Manager
+     11. Network & Internet Connectivity
+   - Provides a "Copy report" button that formats all 11 checks with timestamps and details to clipboard.
+
+3. **Dock-Attach Flow & Branded Status Presentation**:
+   - When the phone is attached to a dock while locked or logged out, the pending `UsbAccessory` intent is preserved in `MainActivity` (`hasPendingDockAttach`) and auto-navigates directly to Monitor Mode once authenticated.
+   - "Keep me signed in" checkbox on the Login screen securely stores credentials via `FlutterSecureStorage` (backed by Android Keystore / encrypted shared prefs with in-memory fallback), enabling silent re-authentication on USB dock reconnection.
+   - `MobiDeskPresentation` replaces any blank/black/frozen screen with a branded MobiDesk connecting screen featuring an active Material loading spinner, status text (*"Connecting to Cloud Desktop..."*), and exponential backoff retry countdown (1s, 2s, 4s, 8s, 15s).
+   - `WebView.setWebContentsDebuggingEnabled(true)` enables remote debugging of the Presentation WebView via Chrome DevTools (`chrome://inspect`).
+
+4. **Persistent Diagnostics & Observability**:
+   - Thread-safe ~1 MB ring-buffer file logger (`AppLogger.kt`) persists timestamped logs to app-private cache storage (`mobidesk.log` and `mobidesk.log.old`).
+   - Integrated log viewer screen (**Developer Tools > View Logs**) provides filtering, auto-scroll to bottom, log clearing, clipboard copying, and sharing via Android `Intent.ACTION_SEND` through an AndroidX `FileProvider`.
+   - `ScreenCaptureService` emits a 5-second periodic stream stats log (`fps, kbps, dropped, keyframes, wakeLock, wifiLock, fgsType`).
+   - `UsbAccessorySender` maintains atomic accounting for dropped video frames (`droppedFramesCount`) when the USB bulk channel buffers are saturated.
+
+5. **Pi-Side Diagnostics & HDMI Output Testing**:
+   - `mobidesk_dock.py` logs 5-second periodic dock stats (`decoder, incoming_fps, kbps, last_keyframe_age, input_events_per_sec, usb_state`).
+   - `--diagnose` flag inspects `lsusb`, AOA driver/state, DRM/KMS EDID modes, GStreamer elements, and `/dev/input/event*` devices.
+   - `--test-pattern` flag displays a standalone SMPTE test pattern via `kmssink` or `autovideosink` to test the HDMI display independently of USB connection.

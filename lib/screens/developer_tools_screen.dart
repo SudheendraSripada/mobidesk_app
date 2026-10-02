@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../services/usb_stream_service.dart';
+import 'log_viewer_screen.dart';
+import 'system_check_screen.dart';
 
 /// Hidden Developer Tools screen accessible via long-press on the MobiDesk logo.
 /// Preserves the original USB AOA Sender (Phone A) and Receiver (Phone B) diagnostic tools.
@@ -383,6 +385,76 @@ class _DeveloperToolsScreenState extends State<DeveloperToolsScreen> with Widget
                           ),
                           icon: const Icon(Icons.tv_rounded),
                           label: const Text('Receive (Receiver)'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 12),
+
+                // Diagnostics & System Logs Card
+                Card(
+                  elevation: 1,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(Icons.terminal_rounded, color: colorScheme.primary, size: 20),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Diagnostics & Logs',
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          'View persistent ~1MB ring-buffer logs, share logs, or validate runtime prerequisites.',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: FilledButton.tonalIcon(
+                                onPressed: () {
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute<void>(
+                                      builder: (_) => const LogViewerScreen(),
+                                    ),
+                                  );
+                                },
+                                icon: const Icon(Icons.receipt_long_rounded),
+                                label: const Text('Log Viewer'),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () {
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute<void>(
+                                      builder: (_) => const SystemCheckScreen(),
+                                    ),
+                                  );
+                                },
+                                icon: const Icon(Icons.fact_check_outlined),
+                                label: const Text('System Check'),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),

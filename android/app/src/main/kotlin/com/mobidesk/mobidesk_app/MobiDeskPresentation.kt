@@ -6,44 +6,63 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.Typeface
 import android.graphics.drawable.ColorDrawable
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.Display
+import android.view.Gravity
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ProgressBar
+import android.widget.TextView
 
 /**
  * Android Presentation displaying the Cloud PC HTML5 session (Apache Guacamole)
  * on an independent VirtualDisplay backed by the MediaCodec encoder input Surface.
- * Runs completely decoupled from the phone's primary screen, continuing to stream
- * seamlessly even when the phone screen is turned off.
  *
  * Implements:
+ * - Branded monitor status screen ("MobiDesk - connecting your Cloud PC..." / spinner / error countdown).
+ * - Automatic exponential backoff reconnection on WebSocket close / error (1s, 2s, 4s, 8s, max 15s).
+ * - Persistent logging of page lifecycle, errors, and console messages via AppLogger.
+ * - Chrome remote inspection via WebView.setWebContentsDebuggingEnabled(true).
  * - Software cursor overlay View tracked from injected mouse coordinates.
- * - Primary input injection: dispatch real MotionEvent (SOURCE_MOUSE) and KeyEvent to WebView.
- * - Fallback input injection: evaluateJavascript dispatching synthetic DOM events at document level.
- * - Full Linux evdev key mapping -> Android KeyEvent and DOM keys.
+ * - Native MotionEvent / KeyEvent injection with DOM fallback.
  */
 class MobiDeskPresentation(
     outerContext: Context,
     display: Display,
-    private val sessionUrl: String
+    private var sessionUrl: String? = null
 ) : Presentation(outerContext, display) {
 
+    private val TAG = "MobiDeskPresentation"
+
+    private var rootLayout: FrameLayout? = null
     private var webView: WebView? = null
     private var cursorView: CursorOverlayView? = null
+    private var statusLayout: LinearLayout? = null
+    private var statusTitleView: TextView? = null
+    private var statusSubtitleView: TextView? = null
+    private var statusProgressBar: ProgressBar? = null
+    private var statusErrorView: TextView? = null
+
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var lastMouseX = 0f
@@ -51,10 +70,24 @@ class MobiDeskPresentation(
     private var lastButtonMask = 0
     private var downTime = SystemClock.uptimeMillis()
 
+    // Reconnection backoff state
+    private var reconnectAttempt = 0
+    private var isReconnecting = false
+    private val backoffDelays = longArrayOf(1000L, 2000L, 4000L, 8000L, 15000L)
+    private var reconnectRunnable: Runnable? = null
+
+    companion object {
+        init {
+            // Enable chrome://inspect for prototype diagnostics
+            try {
+                WebView.setWebContentsDebuggingEnabled(true)
+            } catch (_: Exception) {}
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Ensure Presentation window covers the entire virtual display without borders
         window?.apply {
             setBackgroundDrawable(ColorDrawable(Color.BLACK))
             setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
@@ -71,6 +104,7 @@ class MobiDeskPresentation(
             setBackgroundColor(Color.BLACK)
         }
 
+        // 1. Accelerated HTML5 WebView
         val wv = WebView(displayContext).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
@@ -89,12 +123,102 @@ class MobiDeskPresentation(
             }
             isFocusable = true
             isFocusableInTouchMode = true
-            webViewClient = WebViewClient()
-            webChromeClient = WebChromeClient()
-            loadUrl(sessionUrl)
+            setBackgroundColor(Color.BLACK)
+
+            webViewClient = object : WebViewClient() {
+                override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                    AppLogger.i(TAG, "WebView onPageStarted: $url")
+                    showConnectingScreen("Connecting your Cloud PC...")
+                }
+
+                override fun onPageFinished(view: WebView?, url: String?) {
+                    AppLogger.i(TAG, "WebView onPageFinished: $url")
+                    reconnectAttempt = 0
+                    isReconnecting = false
+                    hideStatusScreen()
+                }
+
+                override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+                    val desc = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) error?.description?.toString() ?: "" else ""
+                    val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) error?.errorCode ?: 0 else 0
+                    AppLogger.e(TAG, "WebView onReceivedError: code=$code desc=$desc url=${request?.url}")
+                    if (request?.isForMainFrame == true) {
+                        scheduleReconnect("Network connection error ($code): $desc")
+                    }
+                }
+
+                override fun onReceivedHttpError(view: WebView?, request: WebResourceRequest?, errorResponse: WebResourceResponse?) {
+                    val statusCode = errorResponse?.statusCode ?: 0
+                    AppLogger.e(TAG, "WebView onReceivedHttpError: status=$statusCode url=${request?.url}")
+                    if (request?.isForMainFrame == true && statusCode >= 400) {
+                        scheduleReconnect("Server returned HTTP $statusCode")
+                    }
+                }
+            }
+
+            webChromeClient = object : WebChromeClient() {
+                override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                    val msg = consoleMessage?.message() ?: ""
+                    AppLogger.d(TAG, "WebView Console: $msg [${consoleMessage?.sourceId()}:${consoleMessage?.lineNumber()}]")
+                    if (msg.contains("WebSocket", ignoreCase = true) &&
+                        (msg.contains("closed", ignoreCase = true) || msg.contains("failed", ignoreCase = true) || msg.contains("error", ignoreCase = true))) {
+                        scheduleReconnect("Guacamole WebSocket session closed: $msg")
+                    }
+                    return super.onConsoleMessage(consoleMessage)
+                }
+            }
         }
 
-        // Software cursor overlay View
+        // 2. Branded Monitor Status Screen View (never leave monitor black or frozen)
+        val statusView = LinearLayout(displayContext).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.parseColor("#0F172A")) // Deep dark slate background
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+            setPadding(48, 48, 48, 48)
+        }
+
+        val titleTv = TextView(displayContext).apply {
+            text = "MobiDesk"
+            textSize = 34f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.parseColor("#6366F1")) // Indigo 500
+            gravity = Gravity.CENTER
+        }
+
+        val subtitleTv = TextView(displayContext).apply {
+            text = "MobiDesk - connecting your Cloud PC..."
+            textSize = 20f
+            setTextColor(Color.WHITE)
+            gravity = Gravity.CENTER
+            setPadding(0, 16, 0, 24)
+        }
+
+        val spinner = ProgressBar(displayContext).apply {
+            isIndeterminate = true
+            layoutParams = LinearLayout.LayoutParams(96, 96).apply {
+                gravity = Gravity.CENTER
+            }
+        }
+
+        val errorTv = TextView(displayContext).apply {
+            text = ""
+            textSize = 15f
+            setTextColor(Color.parseColor("#FCA5A5")) // Light red
+            gravity = Gravity.CENTER
+            setPadding(0, 20, 0, 0)
+            visibility = View.GONE
+        }
+
+        statusView.addView(titleTv)
+        statusView.addView(subtitleTv)
+        statusView.addView(spinner)
+        statusView.addView(errorTv)
+
+        // 3. Software cursor overlay View
         val cursor = CursorOverlayView(displayContext).apply {
             visibility = View.VISIBLE
             elevation = 100f
@@ -102,11 +226,95 @@ class MobiDeskPresentation(
         }
 
         root.addView(wv)
+        root.addView(statusView)
         root.addView(cursor)
         setContentView(root)
 
+        rootLayout = root
         webView = wv
         cursorView = cursor
+        statusLayout = statusView
+        statusTitleView = titleTv
+        statusSubtitleView = subtitleTv
+        statusProgressBar = spinner
+        statusErrorView = errorTv
+
+        // If session URL is already available, load it; otherwise display connecting status
+        val url = sessionUrl
+        if (!url.isNullOrEmpty()) {
+            showConnectingScreen("MobiDesk - connecting your Cloud PC...")
+            wv.loadUrl(url)
+        } else {
+            showConnectingScreen("MobiDesk - waiting for Cloud PC session assignment...")
+        }
+    }
+
+    fun updateSessionUrl(newUrl: String) {
+        sessionUrl = newUrl
+        mainHandler.post {
+            reconnectAttempt = 0
+            isReconnecting = false
+            showConnectingScreen("MobiDesk - connecting your Cloud PC...")
+            webView?.loadUrl(newUrl)
+        }
+    }
+
+    fun showConnectingScreen(message: String) {
+        mainHandler.post {
+            statusLayout?.visibility = View.VISIBLE
+            statusProgressBar?.visibility = View.VISIBLE
+            statusSubtitleView?.text = message
+            statusErrorView?.visibility = View.GONE
+        }
+    }
+
+    fun showErrorScreen(errorText: String, retryCountdownSeconds: Int = 0) {
+        mainHandler.post {
+            statusLayout?.visibility = View.VISIBLE
+            statusProgressBar?.visibility = if (retryCountdownSeconds > 0) View.VISIBLE else View.GONE
+            statusSubtitleView?.text = "Connection Error"
+            val text = if (retryCountdownSeconds > 0) {
+                "$errorText\nRetrying automatically in ${retryCountdownSeconds}s..."
+            } else {
+                errorText
+            }
+            statusErrorView?.text = text
+            statusErrorView?.visibility = View.VISIBLE
+        }
+    }
+
+    fun hideStatusScreen() {
+        mainHandler.post {
+            statusLayout?.visibility = View.GONE
+            statusErrorView?.visibility = View.GONE
+        }
+    }
+
+    private fun scheduleReconnect(reason: String) {
+        if (isReconnecting) return
+        isReconnecting = true
+
+        val delayIdx = reconnectAttempt.coerceAtMost(backoffDelays.size - 1)
+        val delayMs = backoffDelays[delayIdx]
+        val delaySec = delayMs / 1000
+        reconnectAttempt++
+
+        AppLogger.w(TAG, "Cloud PC connection failed: $reason. Reconnecting (attempt $reconnectAttempt) in ${delaySec}s...")
+
+        showErrorScreen("Reconnecting to Cloud PC...\n$reason", delaySec.toInt())
+
+        reconnectRunnable?.let { mainHandler.removeCallbacks(it) }
+        val r = Runnable {
+            isReconnecting = false
+            val url = sessionUrl
+            if (!url.isNullOrEmpty() && webView != null) {
+                AppLogger.i(TAG, "Executing reconnect attempt $reconnectAttempt to $url")
+                showConnectingScreen("Reconnecting to Cloud PC (attempt $reconnectAttempt)...")
+                webView?.loadUrl(url)
+            }
+        }
+        reconnectRunnable = r
+        mainHandler.postDelayed(r, delayMs)
     }
 
     /**
@@ -123,7 +331,9 @@ class MobiDeskPresentation(
             val wv = webView ?: return@post
             val cursor = cursorView
 
+            @Suppress("DEPRECATION")
             val displayW = display.width.toFloat().coerceAtLeast(1f)
+            @Suppress("DEPRECATION")
             val displayH = display.height.toFloat().coerceAtLeast(1f)
 
             val x = (normX.toFloat() / 65535f) * displayW
@@ -249,48 +459,46 @@ class MobiDeskPresentation(
     ) {
         mainHandler.post {
             val wv = webView ?: return@post
-            val isDown = state != 0
-            val mapping = EvdevKeyMapper.map(keyCode)
 
-            // 1. Primary: dispatch native KeyEvent to WebView
+            val androidKeyCode = mapEvdevToAndroidKey(keyCode)
+            val action = if (state == 1) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP
+            val metaState = mapModifierMaskToMetaState(modifierMask)
+            val now = SystemClock.uptimeMillis()
+
             try {
-                val action = if (isDown) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP
-                val metaState = computeMetaState(modifierMask)
                 val keyEvent = KeyEvent(
-                    SystemClock.uptimeMillis(),
-                    SystemClock.uptimeMillis(),
-                    action,
-                    mapping.androidKeyCode,
-                    0,
-                    metaState
+                    now, now, action, androidKeyCode, 0, metaState,
+                    android.view.KeyCharacterMap.VIRTUAL_KEYBOARD, 0,
+                    KeyEvent.FLAG_FROM_SYSTEM, InputDevice.SOURCE_KEYBOARD
                 )
                 wv.dispatchKeyEvent(keyEvent)
             } catch (_: Exception) {}
 
-            // 2. Fallback: dispatch synthetic DOM KeyboardEvent at document level
+            // DOM fallback for Guacamole canvas
             try {
-                val eventType = if (isDown) "keydown" else "keyup"
-                val shiftKey = (modifierMask and 0x01) != 0
-                val ctrlKey = (modifierMask and 0x02) != 0
-                val altKey = (modifierMask and 0x04) != 0
-                val metaKey = (modifierMask and 0x08) != 0
+                val eventType = if (state == 1) "keydown" else "keyup"
+                val domKey = mapEvdevToDomKey(keyCode)
+                val domCode = mapEvdevToDomCode(keyCode)
+                val isCtrl = (modifierMask and 0x02) != 0
+                val isShift = (modifierMask and 0x01) != 0
+                val isAlt = (modifierMask and 0x04) != 0
+                val isMeta = (modifierMask and 0x08) != 0
 
                 val js = """
                     (function() {
-                        var target = document.activeElement || document;
-                        var evt = new KeyboardEvent('$eventType', {
-                            key: '${mapping.domKey}',
-                            code: '${mapping.domCode}',
-                            keyCode: ${mapping.domKeyCode},
-                            which: ${mapping.domKeyCode},
-                            shiftKey: $shiftKey,
-                            ctrlKey: $ctrlKey,
-                            altKey: $altKey,
-                            metaKey: $metaKey,
+                        var e = new KeyboardEvent('$eventType', {
+                            key: '$domKey',
+                            code: '$domCode',
+                            keyCode: $androidKeyCode,
+                            which: $androidKeyCode,
                             bubbles: true,
-                            cancelable: true
+                            cancelable: true,
+                            ctrlKey: $isCtrl,
+                            shiftKey: $isShift,
+                            altKey: $isAlt,
+                            metaKey: $isMeta
                         });
-                        target.dispatchEvent(evt);
+                        (document.activeElement || document).dispatchEvent(e);
                     })();
                 """.trimIndent()
                 wv.evaluateJavascript(js, null)
@@ -298,151 +506,219 @@ class MobiDeskPresentation(
         }
     }
 
-    private fun computeMetaState(modifierMask: Int): Int {
+    private fun mapEvdevToAndroidKey(evdevCode: Int): Int {
+        return when (evdevCode) {
+            1 -> KeyEvent.KEYCODE_ESCAPE
+            2 -> KeyEvent.KEYCODE_1
+            3 -> KeyEvent.KEYCODE_2
+            4 -> KeyEvent.KEYCODE_3
+            5 -> KeyEvent.KEYCODE_4
+            6 -> KeyEvent.KEYCODE_5
+            7 -> KeyEvent.KEYCODE_6
+            8 -> KeyEvent.KEYCODE_7
+            9 -> KeyEvent.KEYCODE_8
+            10 -> KeyEvent.KEYCODE_9
+            11 -> KeyEvent.KEYCODE_0
+            14 -> KeyEvent.KEYCODE_DEL
+            15 -> KeyEvent.KEYCODE_TAB
+            16 -> KeyEvent.KEYCODE_Q
+            17 -> KeyEvent.KEYCODE_W
+            18 -> KeyEvent.KEYCODE_E
+            19 -> KeyEvent.KEYCODE_R
+            20 -> KeyEvent.KEYCODE_T
+            21 -> KeyEvent.KEYCODE_Y
+            22 -> KeyEvent.KEYCODE_U
+            23 -> KeyEvent.KEYCODE_I
+            24 -> KeyEvent.KEYCODE_O
+            25 -> KeyEvent.KEYCODE_P
+            28 -> KeyEvent.KEYCODE_ENTER
+            29 -> KeyEvent.KEYCODE_CTRL_LEFT
+            30 -> KeyEvent.KEYCODE_A
+            31 -> KeyEvent.KEYCODE_S
+            32 -> KeyEvent.KEYCODE_D
+            33 -> KeyEvent.KEYCODE_F
+            34 -> KeyEvent.KEYCODE_G
+            35 -> KeyEvent.KEYCODE_H
+            36 -> KeyEvent.KEYCODE_J
+            37 -> KeyEvent.KEYCODE_K
+            38 -> KeyEvent.KEYCODE_L
+            42 -> KeyEvent.KEYCODE_SHIFT_LEFT
+            44 -> KeyEvent.KEYCODE_Z
+            45 -> KeyEvent.KEYCODE_X
+            46 -> KeyEvent.KEYCODE_C
+            47 -> KeyEvent.KEYCODE_V
+            48 -> KeyEvent.KEYCODE_B
+            49 -> KeyEvent.KEYCODE_N
+            50 -> KeyEvent.KEYCODE_M
+            54 -> KeyEvent.KEYCODE_SHIFT_RIGHT
+            56 -> KeyEvent.KEYCODE_ALT_LEFT
+            57 -> KeyEvent.KEYCODE_SPACE
+            97 -> KeyEvent.KEYCODE_CTRL_RIGHT
+            100 -> KeyEvent.KEYCODE_ALT_RIGHT
+            103 -> KeyEvent.KEYCODE_DPAD_UP
+            105 -> KeyEvent.KEYCODE_DPAD_LEFT
+            106 -> KeyEvent.KEYCODE_DPAD_RIGHT
+            108 -> KeyEvent.KEYCODE_DPAD_DOWN
+            111 -> KeyEvent.KEYCODE_FORWARD_DEL
+            125 -> KeyEvent.KEYCODE_META_LEFT
+            126 -> KeyEvent.KEYCODE_META_RIGHT
+            else -> KeyEvent.KEYCODE_UNKNOWN
+        }
+    }
+
+    private fun mapEvdevToDomKey(evdevCode: Int): String {
+        return when (evdevCode) {
+            1 -> "Escape"
+            14 -> "Backspace"
+            15 -> "Tab"
+            28 -> "Enter"
+            29, 97 -> "Control"
+            42, 54 -> "Shift"
+            56, 100 -> "Alt"
+            57 -> " "
+            103 -> "ArrowUp"
+            105 -> "ArrowLeft"
+            106 -> "ArrowRight"
+            108 -> "ArrowDown"
+            111 -> "Delete"
+            125, 126 -> "Meta"
+            in 2..10 -> "${evdevCode - 1}"
+            11 -> "0"
+            16 -> "q"
+            17 -> "w"
+            18 -> "e"
+            19 -> "r"
+            20 -> "t"
+            21 -> "y"
+            22 -> "u"
+            23 -> "i"
+            24 -> "o"
+            25 -> "p"
+            30 -> "a"
+            31 -> "s"
+            32 -> "d"
+            33 -> "f"
+            34 -> "g"
+            35 -> "h"
+            36 -> "j"
+            37 -> "k"
+            38 -> "l"
+            44 -> "z"
+            45 -> "x"
+            46 -> "c"
+            47 -> "v"
+            48 -> "b"
+            49 -> "n"
+            50 -> "m"
+            else -> "Unidentified"
+        }
+    }
+
+    private fun mapEvdevToDomCode(evdevCode: Int): String {
+        return when (evdevCode) {
+            1 -> "Escape"
+            14 -> "Backspace"
+            15 -> "Tab"
+            28 -> "Enter"
+            29 -> "ControlLeft"
+            97 -> "ControlRight"
+            42 -> "ShiftLeft"
+            54 -> "ShiftRight"
+            56 -> "AltLeft"
+            100 -> "AltRight"
+            57 -> "Space"
+            103 -> "ArrowUp"
+            105 -> "ArrowLeft"
+            106 -> "ArrowRight"
+            108 -> "ArrowDown"
+            111 -> "Delete"
+            125 -> "MetaLeft"
+            126 -> "MetaRight"
+            in 2..10 -> "Digit${evdevCode - 1}"
+            11 -> "Digit0"
+            16 -> "KeyQ"
+            17 -> "KeyW"
+            18 -> "KeyE"
+            19 -> "KeyR"
+            20 -> "KeyT"
+            21 -> "KeyY"
+            22 -> "KeyU"
+            23 -> "KeyI"
+            24 -> "KeyO"
+            25 -> "KeyP"
+            30 -> "KeyA"
+            31 -> "KeyS"
+            32 -> "KeyD"
+            33 -> "KeyF"
+            34 -> "KeyG"
+            35 -> "KeyH"
+            36 -> "KeyJ"
+            37 -> "KeyK"
+            38 -> "KeyL"
+            44 -> "KeyZ"
+            45 -> "KeyX"
+            46 -> "KeyC"
+            47 -> "KeyV"
+            48 -> "KeyB"
+            49 -> "KeyN"
+            50 -> "KeyM"
+            else -> "Unidentified"
+        }
+    }
+
+    private fun mapModifierMaskToMetaState(mask: Int): Int {
         var meta = 0
-        if ((modifierMask and 0x01) != 0) meta = meta or KeyEvent.META_SHIFT_ON
-        if ((modifierMask and 0x02) != 0) meta = meta or KeyEvent.META_CTRL_ON
-        if ((modifierMask and 0x04) != 0) meta = meta or KeyEvent.META_ALT_ON
-        if ((modifierMask and 0x08) != 0) meta = meta or KeyEvent.META_META_ON
+        if ((mask and 0x01) != 0) meta = meta or KeyEvent.META_SHIFT_ON
+        if ((mask and 0x02) != 0) meta = meta or KeyEvent.META_CTRL_ON
+        if ((mask and 0x04) != 0) meta = meta or KeyEvent.META_ALT_ON
+        if ((mask and 0x08) != 0) meta = meta or KeyEvent.META_META_ON
         return meta
     }
 
-    override fun onDetachedFromWindow() {
+    override fun dismiss() {
+        reconnectRunnable?.let { mainHandler.removeCallbacks(it) }
         try {
             webView?.stopLoading()
-            webView?.loadUrl("about:blank")
             webView?.destroy()
         } catch (_: Exception) {}
         webView = null
-        cursorView = null
-        super.onDetachedFromWindow()
-    }
-}
-
-/**
- * Lightweight software cursor overlay View drawn directly on top of the Presentation WebView.
- */
-class CursorOverlayView(context: Context) : View(context) {
-    private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        style = Paint.Style.FILL
-    }
-    private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.BLACK
-        style = Paint.Style.STROKE
-        strokeWidth = 2.5f
-    }
-    private val path = Path().apply {
-        moveTo(0f, 0f)
-        lineTo(0f, 26f)
-        lineTo(6f, 20f)
-        lineTo(11f, 30f)
-        lineTo(15f, 28f)
-        lineTo(10f, 18f)
-        lineTo(18f, 18f)
-        close()
+        super.dismiss()
     }
 
-    init {
-        layoutParams = FrameLayout.LayoutParams(36, 36)
-    }
+    /**
+     * Software cursor overlay drawn on top of the Presentation WebView.
+     */
+    private class CursorOverlayView(context: Context) : View(context) {
+        private val fillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            style = Paint.Style.FILL
+        }
 
-    override fun onDraw(canvas: Canvas) {
-        super.onDraw(canvas)
-        canvas.drawPath(path, fillPaint)
-        canvas.drawPath(path, strokePaint)
-    }
-}
+        private val strokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            style = Paint.Style.STROKE
+            strokeWidth = 2.5f
+        }
 
-/**
- * Maps Linux evdev key codes to Android KeyEvent codes and DOM KeyboardEvent keys.
- */
-object EvdevKeyMapper {
-    data class KeyMapping(
-        val androidKeyCode: Int,
-        val domKey: String,
-        val domCode: String,
-        val domKeyCode: Int
-    )
+        private val cursorPath = Path().apply {
+            moveTo(0f, 0f)
+            lineTo(0f, 32f)
+            lineTo(8f, 24f)
+            lineTo(16f, 36f)
+            lineTo(20f, 34f)
+            lineTo(12f, 22f)
+            lineTo(22f, 22f)
+            close()
+        }
 
-    fun map(evdevCode: Int): KeyMapping {
-        return when (evdevCode) {
-            1 -> KeyMapping(KeyEvent.KEYCODE_ESCAPE, "Escape", "Escape", 27)
-            2 -> KeyMapping(KeyEvent.KEYCODE_1, "1", "Digit1", 49)
-            3 -> KeyMapping(KeyEvent.KEYCODE_2, "2", "Digit2", 50)
-            4 -> KeyMapping(KeyEvent.KEYCODE_3, "3", "Digit3", 51)
-            5 -> KeyMapping(KeyEvent.KEYCODE_4, "4", "Digit4", 52)
-            6 -> KeyMapping(KeyEvent.KEYCODE_5, "5", "Digit5", 53)
-            7 -> KeyMapping(KeyEvent.KEYCODE_6, "6", "Digit6", 54)
-            8 -> KeyMapping(KeyEvent.KEYCODE_7, "7", "Digit7", 55)
-            9 -> KeyMapping(KeyEvent.KEYCODE_8, "8", "Digit8", 56)
-            10 -> KeyMapping(KeyEvent.KEYCODE_9, "9", "Digit9", 57)
-            11 -> KeyMapping(KeyEvent.KEYCODE_0, "0", "Digit0", 48)
-            14 -> KeyMapping(KeyEvent.KEYCODE_DEL, "Backspace", "Backspace", 8)
-            15 -> KeyMapping(KeyEvent.KEYCODE_TAB, "Tab", "Tab", 9)
-            16 -> KeyMapping(KeyEvent.KEYCODE_Q, "q", "KeyQ", 81)
-            17 -> KeyMapping(KeyEvent.KEYCODE_W, "w", "KeyW", 87)
-            18 -> KeyMapping(KeyEvent.KEYCODE_E, "e", "KeyE", 69)
-            19 -> KeyMapping(KeyEvent.KEYCODE_R, "r", "KeyR", 82)
-            20 -> KeyMapping(KeyEvent.KEYCODE_T, "t", "KeyT", 84)
-            21 -> KeyMapping(KeyEvent.KEYCODE_Y, "y", "KeyY", 89)
-            22 -> KeyMapping(KeyEvent.KEYCODE_U, "u", "KeyU", 85)
-            23 -> KeyMapping(KeyEvent.KEYCODE_I, "i", "KeyI", 73)
-            24 -> KeyMapping(KeyEvent.KEYCODE_O, "o", "KeyO", 79)
-            25 -> KeyMapping(KeyEvent.KEYCODE_P, "p", "KeyP", 80)
-            28 -> KeyMapping(KeyEvent.KEYCODE_ENTER, "Enter", "Enter", 13)
-            29 -> KeyMapping(KeyEvent.KEYCODE_CTRL_LEFT, "Control", "ControlLeft", 17)
-            30 -> KeyMapping(KeyEvent.KEYCODE_A, "a", "KeyA", 65)
-            31 -> KeyMapping(KeyEvent.KEYCODE_S, "s", "KeyS", 83)
-            32 -> KeyMapping(KeyEvent.KEYCODE_D, "d", "KeyD", 68)
-            33 -> KeyMapping(KeyEvent.KEYCODE_F, "f", "KeyF", 70)
-            34 -> KeyMapping(KeyEvent.KEYCODE_G, "g", "KeyG", 71)
-            35 -> KeyMapping(KeyEvent.KEYCODE_H, "h", "KeyH", 72)
-            36 -> KeyMapping(KeyEvent.KEYCODE_J, "j", "KeyJ", 74)
-            37 -> KeyMapping(KeyEvent.KEYCODE_K, "k", "KeyK", 75)
-            38 -> KeyMapping(KeyEvent.KEYCODE_L, "l", "KeyL", 76)
-            42 -> KeyMapping(KeyEvent.KEYCODE_SHIFT_LEFT, "Shift", "ShiftLeft", 16)
-            44 -> KeyMapping(KeyEvent.KEYCODE_Z, "z", "KeyZ", 90)
-            45 -> KeyMapping(KeyEvent.KEYCODE_X, "x", "KeyX", 88)
-            46 -> KeyMapping(KeyEvent.KEYCODE_C, "c", "KeyC", 67)
-            47 -> KeyMapping(KeyEvent.KEYCODE_V, "v", "KeyV", 86)
-            48 -> KeyMapping(KeyEvent.KEYCODE_B, "b", "KeyB", 66)
-            49 -> KeyMapping(KeyEvent.KEYCODE_N, "n", "KeyN", 78)
-            50 -> KeyMapping(KeyEvent.KEYCODE_M, "m", "KeyM", 77)
-            54 -> KeyMapping(KeyEvent.KEYCODE_SHIFT_RIGHT, "Shift", "ShiftRight", 16)
-            56 -> KeyMapping(KeyEvent.KEYCODE_ALT_LEFT, "Alt", "AltLeft", 18)
-            57 -> KeyMapping(KeyEvent.KEYCODE_SPACE, " ", "Space", 32)
-            58 -> KeyMapping(KeyEvent.KEYCODE_CAPS_LOCK, "CapsLock", "CapsLock", 20)
-            59 -> KeyMapping(KeyEvent.KEYCODE_F1, "F1", "F1", 112)
-            60 -> KeyMapping(KeyEvent.KEYCODE_F2, "F2", "F2", 113)
-            61 -> KeyMapping(KeyEvent.KEYCODE_F3, "F3", "F3", 114)
-            62 -> KeyMapping(KeyEvent.KEYCODE_F4, "F4", "F4", 115)
-            63 -> KeyMapping(KeyEvent.KEYCODE_F5, "F5", "F5", 116)
-            64 -> KeyMapping(KeyEvent.KEYCODE_F6, "F6", "F6", 117)
-            65 -> KeyMapping(KeyEvent.KEYCODE_F7, "F7", "F7", 118)
-            66 -> KeyMapping(KeyEvent.KEYCODE_F8, "F8", "F8", 119)
-            67 -> KeyMapping(KeyEvent.KEYCODE_F9, "F9", "F9", 120)
-            68 -> KeyMapping(KeyEvent.KEYCODE_F10, "F10", "F10", 121)
-            87 -> KeyMapping(KeyEvent.KEYCODE_F11, "F11", "F11", 122)
-            88 -> KeyMapping(KeyEvent.KEYCODE_F12, "F12", "F12", 123)
-            97 -> KeyMapping(KeyEvent.KEYCODE_CTRL_RIGHT, "Control", "ControlRight", 17)
-            100 -> KeyMapping(KeyEvent.KEYCODE_ALT_RIGHT, "Alt", "AltRight", 18)
-            103 -> KeyMapping(KeyEvent.KEYCODE_DPAD_UP, "ArrowUp", "ArrowUp", 38)
-            105 -> KeyMapping(KeyEvent.KEYCODE_DPAD_LEFT, "ArrowLeft", "ArrowLeft", 37)
-            106 -> KeyMapping(KeyEvent.KEYCODE_DPAD_RIGHT, "ArrowRight", "ArrowRight", 39)
-            108 -> KeyMapping(KeyEvent.KEYCODE_DPAD_DOWN, "ArrowDown", "ArrowDown", 40)
-            111 -> KeyMapping(KeyEvent.KEYCODE_FORWARD_DEL, "Delete", "Delete", 46)
-            125 -> KeyMapping(KeyEvent.KEYCODE_META_LEFT, "Meta", "MetaLeft", 91)
-            126 -> KeyMapping(KeyEvent.KEYCODE_META_RIGHT, "Meta", "MetaRight", 92)
-            else -> {
-                // Direct Android keyCode mappings
-                when (evdevCode) {
-                    KeyEvent.KEYCODE_ENTER -> KeyMapping(KeyEvent.KEYCODE_ENTER, "Enter", "Enter", 13)
-                    KeyEvent.KEYCODE_ESCAPE -> KeyMapping(KeyEvent.KEYCODE_ESCAPE, "Escape", "Escape", 27)
-                    KeyEvent.KEYCODE_TAB -> KeyMapping(KeyEvent.KEYCODE_TAB, "Tab", "Tab", 9)
-                    else -> KeyMapping(KeyEvent.KEYCODE_UNKNOWN, "Unidentified", "Unidentified", 0)
-                }
-            }
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            canvas.drawPath(cursorPath, fillPaint)
+            canvas.drawPath(cursorPath, strokePaint)
+        }
+
+        override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+            setMeasuredDimension(48, 48)
         }
     }
 }

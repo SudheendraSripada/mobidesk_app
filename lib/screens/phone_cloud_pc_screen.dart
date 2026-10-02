@@ -197,8 +197,15 @@ class _PhoneCloudPcScreenState extends State<PhoneCloudPcScreen> {
                       _helperKeyButton('⊞ Win', () => _injectKey('Windows')),
                       _helperKeyButton('Esc', () => _injectKey('Escape')),
                       _helperKeyButton('Tab', () => _injectKey('Tab')),
+                      _helperKeyButton('🖱 Right Click', () => _injectKey('Right Click')),
 
                       const VerticalDivider(color: Colors.white30, width: 16),
+
+                      // Reconnect
+                      _helperKeyButton('↻ Reconnect', _reconnect),
+
+                      // Back to Dashboard
+                      _helperKeyButton('← Dashboard', () => Navigator.of(context).pop()),
 
                       // Disconnect
                       IconButton(

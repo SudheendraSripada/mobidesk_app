@@ -82,6 +82,7 @@ class PhoneCloudPcActivity : Activity() {
                 setSupportZoom(false)
                 displayZoomControls = false
                 mediaPlaybackRequiresUserGesture = false
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 cacheMode = WebSettings.LOAD_DEFAULT
             }
             isFocusable = true

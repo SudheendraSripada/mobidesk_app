@@ -54,12 +54,14 @@ This document details all technical, architectural, and operational assumptions 
 1. **Independent Off-Screen Rendering**:
    - In Monitor Mode, Android creates a `VirtualDisplay` at the exact monitor resolution using `DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION | DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY`.
    - `DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC` is strictly excluded because the Android OS requires the signature-level system permission `android.permission.CAPTURE_VIDEO_OUTPUT`, throwing `SecurityException` for standard 3rd-party applications if included.
+   - Standard `Presentation` window types are maintained (`TYPE_PRESENTATION`). System-only types such as `TYPE_PRIVATE_PRESENTATION` are avoided to prevent `BadTokenException` / permission denial on non-system applications. The `MobiDeskPresentation` window is configured with `MATCH_PARENT` layout dimensions, `ColorDrawable(Color.BLACK)` background, and `FLAG_HARDWARE_ACCELERATED` to guarantee fullscreen output without black bars or dialog padding.
    - The `VirtualDisplay` is backed directly by the `MediaCodec` hardware encoder input Surface.
    - An Android `Presentation` (`MobiDeskPresentation`) displays an accelerated `WebView` rendering the Guacamole HTML5 client.
    - Because the `Presentation` renders to the `VirtualDisplay` rather than the primary screen, the phone's status message ("Connected, started streaming") is **NOT** baked into the HDMI monitor image.
 2. **Continuous Streaming When Phone Screen is Off**:
    - In `STREAM_MODE_VIRTUAL_DISPLAY`, `ScreenCaptureService` ignores `Intent.ACTION_SCREEN_OFF` broadcasts and does not send `TYPE_SLEEP` to the dock.
    - A CPU Partial WakeLock and Android 14 Foreground Service (`FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION`) ensure continuous hardware encoding and USB transmission while the phone screen is locked.
+   - `AoaAccessoryManager.ensureSenderRunning()` guarantees that the zero-queue `UsbAccessorySender` seamlessly resumes whenever streaming is started, stopped, and restarted across active USB accessory sessions without connection drops.
 3. **Hardware Fallback Path**:
    - If `DisplayManager.createVirtualDisplay` with `Presentation` fails on a device due to OEM security policies or GPU driver limitations, the app falls back to `MediaProjection` screen mirroring at the monitor's aspect ratio.
    - An explicit notice is displayed alerting the user that phone-lock is unavailable in fallback mode.

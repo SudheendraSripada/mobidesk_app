@@ -119,11 +119,25 @@ void main() {
     expect(find.text('⊞ Win'), findsOneWidget);
     expect(find.text('Esc'), findsOneWidget);
     expect(find.text('Tab'), findsOneWidget);
+    expect(find.text('🖱 Right Click'), findsOneWidget);
+    expect(find.text('↻ Reconnect'), findsOneWidget);
+    expect(find.text('← Dashboard'), findsOneWidget);
 
     // Test injecting helper key
     await tester.tap(find.text('Ctrl'));
     await tester.pumpAndSettle();
     expect(find.text('Injected key: Ctrl'), findsOneWidget);
+
+    // Wait for previous SnackBar to dismiss so it doesn't obscure the toolbar
+    await tester.pump(const Duration(milliseconds: 700));
+    await tester.pumpAndSettle();
+
+    // Test injecting right-click
+    await tester.ensureVisible(find.text('🖱 Right Click'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('🖱 Right Click'));
+    await tester.pumpAndSettle();
+    expect(find.text('Injected key: Right Click'), findsOneWidget);
 
     // Return to dashboard via AppBar close button
     await tester.tap(find.byIcon(Icons.close_rounded));

@@ -3,9 +3,11 @@ package com.mobidesk.mobidesk_app
 import android.app.Presentation
 import android.content.Context
 import android.graphics.Color
+import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
 import android.view.Display
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -28,6 +30,13 @@ class MobiDeskPresentation(
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Ensure Presentation window covers the entire virtual display at native resolution without borders
+        window?.apply {
+            setBackgroundDrawable(ColorDrawable(Color.BLACK))
+            setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            addFlags(WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED)
+        }
 
         // Use context (inherited from Dialog/Presentation), which encapsulates the VirtualDisplay metrics
         val displayContext = context
@@ -54,6 +63,7 @@ class MobiDeskPresentation(
                 setSupportZoom(false)
                 displayZoomControls = false
                 mediaPlaybackRequiresUserGesture = false
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                 cacheMode = WebSettings.LOAD_DEFAULT
             }
             webViewClient = WebViewClient()

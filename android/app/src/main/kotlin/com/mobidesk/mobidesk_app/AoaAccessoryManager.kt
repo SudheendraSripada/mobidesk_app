@@ -240,6 +240,22 @@ class AoaAccessoryManager(private val context: Context) {
         return true
     }
 
+    /**
+     * Ensures the zero-queue UsbAccessorySender is active with the open output stream.
+     * Useful when streaming restarts while the USB accessory connection remains open.
+     */
+    @Synchronized
+    fun ensureSenderRunning() {
+        val out = outputStream
+        if (isConnected && out != null && !sender.isConnected) {
+            Log.i(TAG, "Resuming UsbAccessorySender on existing accessory stream...")
+            latestConfigHeader?.let { config ->
+                sender.sendConfig(config)
+            }
+            sender.start(out)
+        }
+    }
+
     private fun listenHostSignals() {
         val inStream = inputStream ?: return
         val demuxer = FramingDemuxer { type, _, _, payload ->

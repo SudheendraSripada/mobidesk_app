@@ -225,6 +225,7 @@ class ScreenCaptureService : Service() {
             }
         }
         accessoryMgr.start()
+        accessoryMgr.ensureSenderRunning()
         aoaAccessoryManager = accessoryMgr
 
         // 7. Register broadcast receiver for Screen OFF / Screen ON to notify Phone B of sleep state
@@ -318,11 +319,13 @@ class ScreenCaptureService : Service() {
 
                     Handler(Looper.getMainLooper()).post {
                         try {
-                            val activityContext = MainActivity.currentActivity ?: this@ScreenCaptureService
-                            val pres = MobiDeskPresentation(activityContext, vDisplay.display, guacUrl)
-                            try {
-                                pres.window?.setType(WindowManager.LayoutParams.TYPE_PRIVATE_PRESENTATION)
-                            } catch (_: Exception) {}
+                            val activity = MainActivity.currentActivity
+                            if (activity == null || activity.isFinishing || activity.isDestroyed) {
+                                Log.w(TAG, "No valid foreground Activity for Presentation, activating fallback mirror")
+                                fallbackToMirror(projection, width, height, dpi, surface)
+                                return@post
+                            }
+                            val pres = MobiDeskPresentation(activity, vDisplay.display, guacUrl)
                             pres.show()
                             presentation = pres
                             Log.i(TAG, "MobiDeskPresentation launched on VirtualDisplay at ${width}x${height} for Guacamole session.")

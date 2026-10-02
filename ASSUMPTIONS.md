@@ -1,6 +1,6 @@
 # ASSUMPTIONS.md - MobiDesk Prototype Implementation
 
-This document details all technical, architectural, and operational assumptions made during the implementation of the demo-ready MobiDesk prototype APK.
+This document details all technical, architectural, and operational assumptions made during the implementation of the demo-ready MobiDesk prototype APK (Prototype v2).
 
 ---
 
@@ -34,61 +34,82 @@ This document details all technical, architectural, and operational assumptions 
 
 ---
 
-## 3. USB AOA 2.0 & Framing Protocol
+## 3. USB AOA 2.0 & Framing Protocol Specification
 
 1. **USB Host/Accessory Roles**:
    - The Raspberry Pi 4B acts as **USB Host** via any of its USB-A ports (USB 3.0 ports recommended).
    - The Android phone acts as **USB Accessory** using Android Open Accessory (AOA 2.0).
    - Handshake sequence: Pi requests protocol version (request 51), sends identification strings (request 52), and triggers accessory mode switch (request 53).
-2. **Framing Protocol Extension (`TYPE_DISPLAY_INFO`)**:
+2. **Framing Protocol Extension (Golden Test Vectors in `tests/golden/frames.json`)**:
    - Protocol header: Exactly 16 bytes big-endian (`0x4D, 0x42`, packet type, flags, payload length, 64-bit ptsUs).
-   - In Python (`mobidesk_dock.py`), the header is packed using `>2sBBIQ` (where `Q` denotes the 8-byte unsigned integer timestamp), perfectly matching Kotlin `buffer.putLong(ptsUs)` and Dart `bd.setUint64(8, ptsUs)`.
-   - Packet type `5` (`TYPE_DISPLAY_INFO`) carries 12 bytes of big-endian payload: `width` (int32), `height` (int32), `fps` (int32).
-   - Sent by the Pi Dock immediately upon connection after querying the HDMI display EDID via DRM/KMS sysfs (`/sys/class/drm/card*-HDMI-*/modes`).
-   - Defaults to `1920x1080 @ 60 FPS` if the monitor mode cannot be parsed or if headless.
+   - Python packing uses `>2sBBIQ` matching Kotlin `buffer.putLong(ptsUs)` and Dart `bd.setUint64(8, ptsUs)`.
+   - **Packet Types**:
+     - Type 1 (`TYPE_CONFIG`): SPS/PPS configuration packet.
+     - Type 2 (`TYPE_FRAME`): H.264 video NAL unit frame (FLAG_KEYFRAME indicates IDR).
+     - Type 3 (`TYPE_HEARTBEAT`): Keepalive / keyframe request.
+     - Type 4 (`TYPE_SLEEP`): Phone sleep state packet (`isAsleep` boolean).
+     - Type 5 (`TYPE_DISPLAY_INFO`): 12 bytes (`width` int32, `height` int32, `fps` int32).
+     - Type 6 (`TYPE_INPUT_MOUSE`): 8 bytes (`normX` uint16, `normY` uint16, `buttonMask` uint8, `wheelDx` int8, `wheelDy` int8, `reserved` uint8).
+     - Type 7 (`TYPE_INPUT_KEY`): 8 bytes (`keyCode` uint32, `state` uint8, `modifierMask` uint8, `reserved` uint16).
+3. **Resolution Negotiation & Bitrate Clamping**:
+   - Receiver/Dock transmits `TYPE_DISPLAY_INFO` upon connection.
+   - Sender queries `MediaCodecInfo.VideoCapabilities` for `video/avc`, clamping width and height to encoder capability limits (capped at 1920x1080@30).
+   - Bitrate is dynamically scaled: 8 Mbps for 1080p, 4 Mbps for 720p, 2 Mbps lower; configured with CBR bitrate mode and 1-second I-frame interval.
+   - Sender replies to dock with clamped dimensions via `TYPE_DISPLAY_INFO` reply.
 
 ---
 
 ## 4. Monitor Mode & VirtualDisplay Pipeline
 
-1. **Independent Off-Screen Rendering**:
-   - In Monitor Mode, Android creates a `VirtualDisplay` at the exact monitor resolution using `DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION | DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY`.
-   - `DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC` is strictly excluded because the Android OS requires the signature-level system permission `android.permission.CAPTURE_VIDEO_OUTPUT`, throwing `SecurityException` for standard 3rd-party applications if included.
-   - Standard `Presentation` window types are maintained (`TYPE_PRESENTATION`). System-only types such as `TYPE_PRIVATE_PRESENTATION` are avoided to prevent `BadTokenException` / permission denial on non-system applications. The `MobiDeskPresentation` window is configured with `MATCH_PARENT` layout dimensions, `ColorDrawable(Color.BLACK)` background, and `FLAG_HARDWARE_ACCELERATED` to guarantee fullscreen output without black bars or dialog padding.
+1. **Foreground Service Separation**:
+   - `STREAM_MODE_VIRTUAL_DISPLAY` runs under Android foreground service type `connectedDevice` (with fallback to `specialUse`), eliminating the need for `MediaProjection` runtime prompt upfront.
+   - If fallback mirror mode is triggered, the service promotes to `FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION` before calling `getMediaProjection(resultCode, dataIntent)`.
+2. **Independent Off-Screen Rendering**:
+   - In Monitor Mode, Android creates a `VirtualDisplay` at negotiated monitor resolution using `DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION | DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY`.
    - The `VirtualDisplay` is backed directly by the `MediaCodec` hardware encoder input Surface.
    - An Android `Presentation` (`MobiDeskPresentation`) displays an accelerated `WebView` rendering the Guacamole HTML5 client.
-   - Because the `Presentation` renders to the `VirtualDisplay` rather than the primary screen, the phone's status message ("Connected, started streaming") is **NOT** baked into the HDMI monitor image.
-2. **Continuous Streaming When Phone Screen is Off**:
-   - In `STREAM_MODE_VIRTUAL_DISPLAY`, `ScreenCaptureService` ignores `Intent.ACTION_SCREEN_OFF` broadcasts and does not send `TYPE_SLEEP` to the dock.
-   - A CPU Partial WakeLock and Android 14 Foreground Service (`FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION`) ensure continuous hardware encoding and USB transmission while the phone screen is locked.
-   - `AoaAccessoryManager.ensureSenderRunning()` guarantees that the zero-queue `UsbAccessorySender` seamlessly resumes whenever streaming is started, stopped, and restarted across active USB accessory sessions without connection drops.
-3. **Hardware Fallback Path**:
-   - If `DisplayManager.createVirtualDisplay` with `Presentation` fails on a device due to OEM security policies or GPU driver limitations, the app falls back to `MediaProjection` screen mirroring at the monitor's aspect ratio.
-   - An explicit notice is displayed alerting the user that phone-lock is unavailable in fallback mode.
+   - Because the `Presentation` renders to the `VirtualDisplay` rather than the primary screen, the phone's status message is not baked into the HDMI monitor image.
+3. **Continuous Streaming When Phone Screen is Off**:
+   - In `STREAM_MODE_VIRTUAL_DISPLAY`, `ScreenCaptureService` ignores `Intent.ACTION_SCREEN_OFF` broadcasts and keeps encoding.
+   - A CPU Partial WakeLock, low-latency WifiLock (`FULL_LOW_LATENCY` on API 29+ / `FULL_HIGH_PERF`), and Foreground Service ensure continuous streaming while the phone screen is locked.
+   - An in-app prompt allows the user to request exemption from Android battery optimizations (`ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`).
+4. **Input Forwarding & Software Cursor Overlay**:
+   - Incoming `TYPE_INPUT_MOUSE` and `TYPE_INPUT_KEY` packets from the dock are demuxed and forwarded to `MobiDeskPresentation`.
+   - A software cursor overlay tracks mouse position.
+   - Injected events dispatch both native Android `MotionEvent` / `KeyEvent`s and synthetic DOM `MouseEvent` / `KeyboardEvent` JavaScript fallbacks to Guacamole canvas.
 
 ---
 
 ## 5. Phone Mode (Option A)
 
-1. **Immersive Client & Navigation**:
-   - Fullscreen immersive landscape view (`PhoneCloudPcActivity` on Android, with responsive Flutter backup).
-   - Hardware-accelerated WebView with DOM storage and JavaScript enabled.
-   - Dual-layer input injection: Shortcut helper buttons (`Ctrl`, `Alt`, `Win`, `Esc`, `Tab`) and Right Click dispatch both native Android `KeyEvent`s and synthetic DOM `KeyboardEvent` / `MouseEvent` JavaScript events to ensure the Guacamole HTML5 canvas receives all inputs.
-   - Floating translucent toolbar providing soft keyboard toggle, shortcut keys, reconnect, and disconnect controls.
+1. **Deduplicated Fullscreen Architecture**:
+   - Clicking Phone Mode directly launches `PhoneCloudPcActivity` (native immersive fullscreen WebView) rather than maintaining duplicate Flutter toolbars.
+   - Hardware-accelerated WebView with pinch-to-zoom (`setSupportZoom(true)`, `builtInZoomControls = true`, `displayZoomControls = false`).
+   - Long-press gesture detector dispatches DOM `contextmenu` right-click event at touch coordinates.
+   - Floating translucent toolbar provides quick soft-keyboard toggle and disconnect controls.
 
 ---
 
-## 6. App Quality, Permissions & Network Security
+## 6. Raspberry Pi 4B Dock Script
+
+1. **GStreamer Pipeline Resilience**:
+   - Attempts hardware-accelerated pipeline `v4l2h264dec ! videoconvert ! kmssink` first on Raspberry Pi OS.
+   - Falls back gracefully to `avdec_h264` if hardware decoder is unavailable.
+   - Requests a keyframe via `FLAG_KEYFRAME` heartbeat packet on initial connection and after every reconnect.
+   - Handles phone unplug/replug cleanly in a continuous daemon loop.
+   - Supports `--selftest` CLI flag to verify pyusb, GStreamer, HDMI EDID mode, and evdev dependencies on hardware.
+
+---
+
+## 7. App Quality, Permissions & Network Security
 
 1. **SDK Targets**:
    - `minSdk 24` (Android 7.0 Nougat).
    - `targetSdk 35` (Android 15).
    - `compileSdk 35`.
-2. **Android 13 & 14 Compliance**:
-   - `POST_NOTIFICATIONS` runtime permission declared for Android 13+.
-   - `FOREGROUND_SERVICE_MEDIA_PROJECTION` foreground service type declared for Android 14+.
-3. **Network Security**:
-   - Cleartext HTTP traffic is disabled globally by default.
-   - Cleartext is permitted exclusively for private development LAN IP blocks (`localhost`, `10.0.2.2`, `192.168.0.0/16`, `10.0.0.0/8`, `172.16.0.0/12`) via `network_security_config.xml`.
-4. **Developer Tools**:
-   - Hidden under a long-press gesture on the MobiDesk logo in the AppBar, preserving all original Phone A (Sender) and Phone B (Receiver) diagnostic interfaces.
+2. **Network Security**:
+   - `android:usesCleartextTraffic="true"` configured with prototype note in `AndroidManifest.xml` to allow direct LAN testing against local Guacamole endpoints without certificate installation.
+   - Removed invalid CIDR masks from `network_security_config.xml` to prevent build/runtime config parsing errors.
+3. **Developer Tools & Dual Phone Testing**:
+   - Long-press on the MobiDesk logo in the AppBar opens Developer Tools.
+   - Receiver Activity allows using Phone B as an emulated dock, sending `TYPE_DISPLAY_INFO` and forwarding touch/keyboard inputs as `TYPE_INPUT_MOUSE` and `TYPE_INPUT_KEY` to Phone A.

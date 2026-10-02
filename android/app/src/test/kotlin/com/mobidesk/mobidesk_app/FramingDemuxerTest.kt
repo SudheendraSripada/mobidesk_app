@@ -213,4 +213,111 @@ class FramingDemuxerTest {
         assertEquals(1080, demuxed.second)
         assertEquals(60, demuxed.third)
     }
+
+    @Test
+    fun testTypeInputMouseRoundTrip() {
+        assertEquals(6.toByte(), FramingProtocol.TYPE_INPUT_MOUSE)
+
+        val payload = FramingProtocol.createInputMousePayload(
+            normX = 32768,
+            normY = 16384,
+            buttonMask = 1,
+            wheelDx = 0,
+            wheelDy = -1
+        )
+        assertEquals(8, payload.size)
+
+        val mouse = FramingProtocol.parseInputMouse(payload)
+        assertEquals(32768, mouse.normX)
+        assertEquals(16384, mouse.normY)
+        assertEquals(1, mouse.buttonMask)
+        assertTrue(mouse.isLeftDown)
+        assertEquals(0, mouse.wheelDx)
+        assertEquals(-1, mouse.wheelDy)
+
+        val out = ByteArrayOutputStream()
+        FramingProtocol.writeInputMouse(out, 32768, 16384, 1, 0, -1, 50000L)
+        val packet = out.toByteArray()
+        assertEquals(24, packet.size)
+        assertEquals("4d42060000000008000000000000c350800040000100ff00", packet.joinToString("") { "%02x".format(it) })
+    }
+
+    @Test
+    fun testTypeInputKeyRoundTrip() {
+        assertEquals(7.toByte(), FramingProtocol.TYPE_INPUT_KEY)
+
+        val payload = FramingProtocol.createInputKeyPayload(
+            keyCode = 28,
+            state = 1,
+            modifierMask = 2
+        )
+        assertEquals(8, payload.size)
+
+        val key = FramingProtocol.parseInputKey(payload)
+        assertEquals(28, key.keyCode)
+        assertEquals(1, key.state)
+        assertEquals(2, key.modifierMask)
+        assertTrue(key.isDown)
+        assertTrue(key.isCtrlDown)
+
+        val out = ByteArrayOutputStream()
+        FramingProtocol.writeInputKey(out, 28, 1, 2, 75000L)
+        val packet = out.toByteArray()
+        assertEquals(24, packet.size)
+        assertEquals("4d4207000000000800000000000124f80000001c01020000", packet.joinToString("") { "%02x".format(it) })
+    }
+
+    @Test
+    fun testGoldenVectorsExactHex() {
+        fun hexToBytes(hex: String): ByteArray {
+            val len = hex.length
+            val data = ByteArray(len / 2)
+            var i = 0
+            while (i < len) {
+                data[i / 2] = ((Character.digit(hex[i], 16) shl 4) + Character.digit(hex[i + 1], 16)).toByte()
+                i += 2
+            }
+            return data
+        }
+
+        fun bytesToHex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it) }
+
+        // 1. CONFIG
+        val configPayload = hexToBytes("000000016742001f")
+        val configOut = ByteArrayOutputStream()
+        FramingProtocol.writeFrame(configOut, FramingProtocol.TYPE_CONFIG, FramingProtocol.FLAG_KEYFRAME, configPayload, 0, configPayload.size, 1000L)
+        assertEquals("4d4201010000000800000000000003e8000000016742001f", bytesToHex(configOut.toByteArray()))
+
+        // 2. FRAME
+        val framePayload = hexToBytes("00000001419a2401")
+        val frameOut = ByteArrayOutputStream()
+        FramingProtocol.writeFrame(frameOut, FramingProtocol.TYPE_FRAME, FramingProtocol.FLAG_NONE, framePayload, 0, framePayload.size, 33333L)
+        assertEquals("4d42020000000008000000000000823500000001419a2401", bytesToHex(frameOut.toByteArray()))
+
+        // 3. HEARTBEAT
+        val hbOut = ByteArrayOutputStream()
+        FramingProtocol.writeFrame(hbOut, FramingProtocol.TYPE_HEARTBEAT, FramingProtocol.FLAG_KEYFRAME, ByteArray(0), 0, 0, 0L)
+        assertEquals("4d420301000000000000000000000000", bytesToHex(hbOut.toByteArray()))
+
+        // 4. SLEEP
+        val sleepOut = ByteArrayOutputStream()
+        val sleepPayload = byteArrayOf(1)
+        FramingProtocol.writeFrame(sleepOut, FramingProtocol.TYPE_SLEEP, FramingProtocol.FLAG_NONE, sleepPayload, 0, 1, 0L)
+        assertEquals("4d42040000000001000000000000000001", bytesToHex(sleepOut.toByteArray()))
+
+        // 5. DISPLAY_INFO
+        val dispOut = ByteArrayOutputStream()
+        FramingProtocol.writeDisplayInfo(dispOut, 1920, 1080, 60)
+        assertEquals("4d4205000000000c000000000000000000000780000004380000003c", bytesToHex(dispOut.toByteArray()))
+
+        // 6. INPUT_MOUSE
+        val mouseOut = ByteArrayOutputStream()
+        FramingProtocol.writeInputMouse(mouseOut, 32768, 16384, 1, 0, -1, 50000L)
+        assertEquals("4d42060000000008000000000000c350800040000100ff00", bytesToHex(mouseOut.toByteArray()))
+
+        // 7. INPUT_KEY
+        val keyOut = ByteArrayOutputStream()
+        FramingProtocol.writeInputKey(keyOut, 28, 1, 2, 75000L)
+        assertEquals("4d4207000000000800000000000124f80000001c01020000", bytesToHex(keyOut.toByteArray()))
+    }
 }

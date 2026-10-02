@@ -49,9 +49,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
             children: [
               Icon(Icons.laptop_chromebook_rounded, color: colorScheme.primary),
               const SizedBox(width: 8),
-              const Text(
-                'MobiDesk',
-                style: TextStyle(fontWeight: FontWeight.bold),
+              Flexible(
+                child: Text(
+                  'MobiDesk • ${widget.student.name}',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
             ],
           ),
@@ -80,9 +83,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 _buildStudentHeader(theme, colorScheme),
                 const SizedBox(height: 16),
 
+                // Section: Assigned Virtual Machines
+                _buildSectionHeader(
+                  theme,
+                  title: 'Assigned Virtual Machines',
+                  icon: Icons.computer_rounded,
+                ),
+                const SizedBox(height: 8),
+
                 // Core Feature: Cloud PC Section
                 _buildCloudPcSection(theme, colorScheme),
-                const SizedBox(height: 16),
+                const SizedBox(height: 20),
+
+                // Section: Academics & Attendance
+                _buildSectionHeader(
+                  theme,
+                  title: 'Academics & Attendance',
+                  icon: Icons.school_outlined,
+                ),
+                const SizedBox(height: 8),
 
                 // Academic Information: Attendance, Quizzes, Academics
                 _buildAttendanceCard(theme, colorScheme),
@@ -97,6 +116,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildSectionHeader(
+    ThemeData theme, {
+    required String title,
+    required IconData icon,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: theme.colorScheme.primary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              title.toUpperCase(),
+              style: theme.textTheme.labelMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.8,
+                color: theme.colorScheme.primary,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -264,6 +310,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         const Text(
                           'Phone Mode',
                           style: TextStyle(fontWeight: FontWeight.bold),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                         const SizedBox(height: 2),
                         Text(
@@ -272,6 +320,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             fontSize: 11,
                             color: colorScheme.onSurfaceVariant,
                           ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),
@@ -309,11 +359,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         Text(
                           'Monitor Mode',
                           style: TextStyle(fontWeight: FontWeight.bold),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                         SizedBox(height: 2),
                         Text(
                           'Pi 4B HDMI Dock',
                           style: TextStyle(fontSize: 11, color: Colors.white70),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ],
                     ),
@@ -340,21 +394,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Row(
-                  children: [
-                    Icon(
-                      Icons.event_available_rounded,
-                      color: colorScheme.primary,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Attendance',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
+                Expanded(
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.event_available_rounded,
+                        color: colorScheme.primary,
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Attendance',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.bold,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
+                const SizedBox(width: 8),
                 Text(
                   '${_attendance.overallPercentage}%',
                   style: theme.textTheme.titleLarge?.copyWith(
@@ -381,7 +441,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 child: Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    Text(sub.subject, style: theme.textTheme.bodyMedium),
+                    Expanded(
+                      child: Text(
+                        sub.subject,
+                        style: theme.textTheme.bodyMedium,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
                     Text(
                       '${sub.attendedClasses}/${sub.totalClasses} (${sub.percentage.toStringAsFixed(0)}%)',
                       style: theme.textTheme.bodySmall?.copyWith(
@@ -412,10 +479,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
               children: [
                 Icon(Icons.quiz_outlined, color: colorScheme.primary),
                 const SizedBox(width: 8),
-                Text(
-                  'Upcoming Quizzes & Labs',
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
+                Expanded(
+                  child: Text(
+                    'Upcoming Quizzes & Labs',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
@@ -489,10 +559,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
               children: [
                 Icon(Icons.school_outlined, color: colorScheme.primary),
                 const SizedBox(width: 8),
-                Text(
-                  'Academics Overview',
-                  style: theme.textTheme.titleMedium?.copyWith(
-                    fontWeight: FontWeight.bold,
+                Expanded(
+                  child: Text(
+                    'Academics Overview',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],

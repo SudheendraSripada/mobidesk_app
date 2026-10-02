@@ -5,7 +5,10 @@ import android.content.Context
 import android.content.Intent
 import android.hardware.usb.UsbManager
 import android.media.projection.MediaProjectionManager
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -21,6 +24,7 @@ class MainActivity : FlutterActivity() {
     private var requestedWidth = 1920
     private var requestedHeight = 1080
     private var requestedFps = 60
+    private var autoLaunchMonitor = false
 
     companion object {
         var currentActivity: Activity? = null
@@ -33,11 +37,24 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
         currentActivity = this
+        handleUsbIntent(intent)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1003)
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleUsbIntent(intent)
+    }
+
+    private fun handleUsbIntent(intent: Intent?) {
+        if (intent?.action == UsbManager.ACTION_USB_ACCESSORY_ATTACHED) {
+            autoLaunchMonitor = true
         }
     }
 
@@ -86,7 +103,7 @@ class MainActivity : FlutterActivity() {
                     requestedWidth = customWidth
                     requestedHeight = customHeight
                     requestedFps = customFps
-                    promptScreenCapture(result)
+                    startVirtualDisplayStream(result)
                 }
                 "startPhoneCloudPc" -> {
                     val sessionUrl = call.argument<String>("sessionUrl")
@@ -159,10 +176,73 @@ class MainActivity : FlutterActivity() {
                         result.error("USB_STATUS_ERROR", "Failed to get USB status: ${e.message}", null)
                     }
                 }
+                "requestIgnoreBatteryOptimizations" -> {
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                            val isIgnoring = powerManager.isIgnoringBatteryOptimizations(packageName)
+                            if (!isIgnoring) {
+                                val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                                    data = Uri.parse("package:$packageName")
+                                }
+                                startActivity(intent)
+                            }
+                            result.success(true)
+                        } else {
+                            result.success(true)
+                        }
+                    } catch (e: Exception) {
+                        result.error("BATTERY_OPT_ERROR", "Failed to request battery optimization ignore: ${e.message}", null)
+                    }
+                }
+                "isIgnoringBatteryOptimizations" -> {
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+                            result.success(powerManager.isIgnoringBatteryOptimizations(packageName))
+                        } else {
+                            result.success(true)
+                        }
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
+                }
+                "checkAutoLaunchMonitor" -> {
+                    val shouldLaunch = autoLaunchMonitor
+                    autoLaunchMonitor = false
+                    result.success(shouldLaunch)
+                }
                 else -> {
                     result.notImplemented()
                 }
             }
+        }
+    }
+
+    private fun startVirtualDisplayStream(result: MethodChannel.Result) {
+        if (ScreenCaptureService.isServiceRunning) {
+            result.success(true)
+            return
+        }
+        val metrics = resources.displayMetrics
+        val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
+            action = ScreenCaptureService.ACTION_START
+            putExtra(ScreenCaptureService.EXTRA_WIDTH, requestedWidth)
+            putExtra(ScreenCaptureService.EXTRA_HEIGHT, requestedHeight)
+            putExtra(ScreenCaptureService.EXTRA_DPI, metrics.densityDpi)
+            putExtra(ScreenCaptureService.EXTRA_FPS, requestedFps)
+            putExtra(ScreenCaptureService.EXTRA_STREAM_MODE, ScreenCaptureService.STREAM_MODE_VIRTUAL_DISPLAY)
+            putExtra(ScreenCaptureService.EXTRA_GUAC_URL, requestedGuacUrl)
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("SERVICE_START_FAILED", "Failed to start ScreenCaptureService: ${e.message}", null)
         }
     }
 

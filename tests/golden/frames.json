@@ -1,0 +1,98 @@
+{
+  "endianness": "BIG_ENDIAN",
+  "magic": [77, 66],
+  "magic_hex": "4d42",
+  "magic_str": "MB",
+  "header_size_bytes": 16,
+  "vectors": [
+    {
+      "name": "CONFIG",
+      "type": 1,
+      "flags": 1,
+      "payload_length": 8,
+      "pts_us": 1000,
+      "payload_hex": "000000016742001f",
+      "packet_hex": "4d4201010000000800000000000003e8000000016742001f",
+      "description": "SPS/PPS configuration packet with FLAG_KEYFRAME"
+    },
+    {
+      "name": "FRAME",
+      "type": 2,
+      "flags": 0,
+      "payload_length": 8,
+      "pts_us": 33333,
+      "payload_hex": "00000001419a2401",
+      "packet_hex": "4d42020000000008000000000000823500000001419a2401",
+      "description": "H.264 video NAL unit frame with FLAG_NONE"
+    },
+    {
+      "name": "HEARTBEAT",
+      "type": 3,
+      "flags": 1,
+      "payload_length": 0,
+      "pts_us": 0,
+      "payload_hex": "",
+      "packet_hex": "4d420301000000000000000000000000",
+      "description": "Heartbeat packet with FLAG_KEYFRAME to request IDR sync frame"
+    },
+    {
+      "name": "SLEEP",
+      "type": 4,
+      "flags": 0,
+      "payload_length": 1,
+      "pts_us": 0,
+      "payload_hex": "01",
+      "packet_hex": "4d42040000000001000000000000000001",
+      "description": "Phone sleep state packet indicating isAsleep=true"
+    },
+    {
+      "name": "DISPLAY_INFO",
+      "type": 5,
+      "flags": 0,
+      "payload_length": 12,
+      "pts_us": 0,
+      "payload_hex": "00000780000004380000003c",
+      "packet_hex": "4d4205000000000c000000000000000000000780000004380000003c",
+      "description": "Monitor resolution width=1920, height=1080, fps=60 (big-endian uint32 values)",
+      "fields": {
+        "width": 1920,
+        "height": 1080,
+        "fps": 60
+      }
+    },
+    {
+      "name": "INPUT_MOUSE",
+      "type": 6,
+      "flags": 0,
+      "payload_length": 8,
+      "pts_us": 50000,
+      "payload_hex": "800040000100ff00",
+      "packet_hex": "4d42060000000008000000000000c350800040000100ff00",
+      "description": "Mouse event with normX=32768, normY=16384, buttonMask=1, wheelDx=0, wheelDy=-1, reserved=0",
+      "fields": {
+        "norm_x": 32768,
+        "norm_y": 16384,
+        "button_mask": 1,
+        "wheel_dx": 0,
+        "wheel_dy": -1,
+        "reserved": 0
+      }
+    },
+    {
+      "name": "INPUT_KEY",
+      "type": 7,
+      "flags": 0,
+      "payload_length": 8,
+      "pts_us": 75000,
+      "payload_hex": "0000001c01020000",
+      "packet_hex": "4d4207000000000800000000000124f80000001c01020000",
+      "description": "Key event with keyCode=28, state=1, modifierMask=2, reserved=0",
+      "fields": {
+        "key_code": 28,
+        "state": 1,
+        "modifier_mask": 2,
+        "reserved": 0
+      }
+    }
+  ]
+}

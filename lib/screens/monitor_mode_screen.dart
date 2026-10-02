@@ -31,14 +31,50 @@ class _MonitorModeScreenState extends State<MonitorModeScreen> {
   int _monitorHeight = 1080;
   int _monitorFps = 60;
   bool _isLoading = false;
+  bool _isBatteryOptIgnored = true;
 
   @override
   void initState() {
     super.initState();
     _checkHardwareAndStartFlow();
+    _checkBatteryOptimization();
     _statusTimer = Timer.periodic(
       const Duration(seconds: 1),
       (_) => _pollStatus(),
+    );
+  }
+
+  Future<void> _checkBatteryOptimization() async {
+    final ignored = await UsbStreamService.isIgnoringBatteryOptimizations();
+    if (mounted) {
+      setState(() => _isBatteryOptIgnored = ignored);
+    }
+  }
+
+  void _showBatteryOptDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Battery Optimization Exemption'),
+        content: const Text(
+          'Android may pause or terminate the streaming service when your phone screen turns off.\n\n'
+          'Granting battery optimization exemption ensures continuous, uninterrupted streaming in the background.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Dismiss'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              Navigator.of(ctx).pop();
+              await UsbStreamService.requestIgnoreBatteryOptimizations();
+              await _checkBatteryOptimization();
+            },
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
     );
   }
 
@@ -317,7 +353,7 @@ class _MonitorModeScreenState extends State<MonitorModeScreen> {
                 color: Colors.green,
               ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
 
             // Crucial: Exact required status text
             Text(
@@ -328,7 +364,7 @@ class _MonitorModeScreenState extends State<MonitorModeScreen> {
               ),
               textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 6),
             Text(
               'Resolution: ${_monitorWidth}x$_monitorHeight @ $_monitorFps FPS (Native HDMI)',
               style: theme.textTheme.titleSmall?.copyWith(
@@ -337,7 +373,43 @@ class _MonitorModeScreenState extends State<MonitorModeScreen> {
               ),
               textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 14),
+
+            // Live status chips
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              alignment: WrapAlignment.center,
+              children: [
+                Chip(
+                  avatar: const Icon(Icons.usb_rounded, size: 16),
+                  label: const Text('Dock: Connected'),
+                  backgroundColor: colorScheme.surfaceContainerHighest,
+                ),
+                Chip(
+                  avatar: const Icon(Icons.tv_rounded, size: 16),
+                  label: Text('${_monitorWidth}x$_monitorHeight'),
+                  backgroundColor: colorScheme.surfaceContainerHighest,
+                ),
+                Chip(
+                  avatar: const Icon(Icons.speed_rounded, size: 16),
+                  label: Text('$_monitorFps FPS'),
+                  backgroundColor: colorScheme.surfaceContainerHighest,
+                ),
+                Chip(
+                  avatar: Icon(
+                    _isFallback ? Icons.warning_amber_rounded : Icons.check_circle_rounded,
+                    size: 16,
+                    color: _isFallback ? Colors.amber[800] : Colors.green[800],
+                  ),
+                  label: Text(_isFallback ? 'Fallback Mirror' : 'Virtual Display'),
+                  backgroundColor: _isFallback
+                      ? Colors.amber.withValues(alpha: 0.15)
+                      : Colors.green.withValues(alpha: 0.15),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
 
             Card(
               elevation: 0,
@@ -377,16 +449,17 @@ class _MonitorModeScreenState extends State<MonitorModeScreen> {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Icon(
-                          Icons.lock_clock_rounded,
+                          Icons.power_settings_new_rounded,
                           size: 20,
                           color: colorScheme.secondary,
                         ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            'Phone Screen Off Supported: You can now safely lock your phone screen or use other apps while your desktop stays live on the monitor.',
+                            'You can now turn off your phone screen. MobiDesk continues streaming smoothly in the background.',
                             style: theme.textTheme.bodySmall?.copyWith(
                               color: colorScheme.onSurfaceVariant,
+                              fontWeight: FontWeight.w500,
                             ),
                           ),
                         ),
@@ -396,6 +469,37 @@ class _MonitorModeScreenState extends State<MonitorModeScreen> {
                 ),
               ),
             ),
+
+            if (!_isBatteryOptIgnored) ...[
+              const SizedBox(height: 12),
+              Card(
+                elevation: 0,
+                color: Colors.amber.withValues(alpha: 0.15),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                  side: BorderSide(color: Colors.amber.withValues(alpha: 0.5)),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.battery_alert_rounded, color: Colors.orange),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Text(
+                          'Battery optimization may pause stream on screen lock.',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: _showBatteryOptDialog,
+                        child: const Text('Exempt App'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
 
             if (_isFallback) ...[
               const SizedBox(height: 12),

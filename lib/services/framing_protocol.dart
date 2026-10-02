@@ -23,6 +23,8 @@ class FramingProtocol {
   static const int typeHeartbeat = 3;
   static const int typeSleep = 4;
   static const int typeDisplayInfo = 5;
+  static const int typeInputMouse = 6;
+  static const int typeInputKey = 7;
 
   static const int flagNone = 0x00;
   static const int flagKeyframe = 0x01;
@@ -95,6 +97,151 @@ class FramingProtocol {
     final fps = bd.getUint32(8, Endian.big);
     return DisplayInfo(width: width, height: height, fps: fps);
   }
+
+  /// Creates an 8-byte payload for TYPE_INPUT_MOUSE.
+  static Uint8List createInputMousePayload({
+    required int normX,
+    required int normY,
+    required int buttonMask,
+    int wheelDx = 0,
+    int wheelDy = 0,
+  }) {
+    final bytes = Uint8List(8);
+    final bd = ByteData.sublistView(bytes);
+    bd.setUint16(0, normX, Endian.big);
+    bd.setUint16(2, normY, Endian.big);
+    bd.setUint8(4, buttonMask);
+    bd.setInt8(5, wheelDx);
+    bd.setInt8(6, wheelDy);
+    bd.setUint8(7, 0); // reserved
+    return bytes;
+  }
+
+  /// Parses an 8-byte TYPE_INPUT_MOUSE payload.
+  static InputMouseEvent parseInputMouse(Uint8List payload) {
+    if (payload.length < 8) {
+      throw ArgumentError(
+        'Payload too short for InputMouseEvent: ${payload.length} bytes (required: 8)',
+      );
+    }
+    final bd = ByteData.sublistView(payload);
+    final normX = bd.getUint16(0, Endian.big);
+    final normY = bd.getUint16(2, Endian.big);
+    final buttonMask = bd.getUint8(4);
+    final wheelDx = bd.getInt8(5);
+    final wheelDy = bd.getInt8(6);
+    return InputMouseEvent(
+      normX: normX,
+      normY: normY,
+      buttonMask: buttonMask,
+      wheelDx: wheelDx,
+      wheelDy: wheelDy,
+    );
+  }
+
+  /// Creates an 8-byte payload for TYPE_INPUT_KEY.
+  static Uint8List createInputKeyPayload({
+    required int keyCode,
+    required int state,
+    int modifierMask = 0,
+  }) {
+    final bytes = Uint8List(8);
+    final bd = ByteData.sublistView(bytes);
+    bd.setUint32(0, keyCode, Endian.big);
+    bd.setUint8(4, state);
+    bd.setUint8(5, modifierMask);
+    bd.setUint16(6, 0, Endian.big); // reserved
+    return bytes;
+  }
+
+  /// Parses an 8-byte TYPE_INPUT_KEY payload.
+  static InputKeyEvent parseInputKey(Uint8List payload) {
+    if (payload.length < 8) {
+      throw ArgumentError(
+        'Payload too short for InputKeyEvent: ${payload.length} bytes (required: 8)',
+      );
+    }
+    final bd = ByteData.sublistView(payload);
+    final keyCode = bd.getUint32(0, Endian.big);
+    final state = bd.getUint8(4);
+    final modifierMask = bd.getUint8(5);
+    return InputKeyEvent(
+      keyCode: keyCode,
+      state: state,
+      modifierMask: modifierMask,
+    );
+  }
+}
+
+/// Mouse input event forward packet data.
+class InputMouseEvent {
+  final int normX; // 0..65535
+  final int normY; // 0..65535
+  final int buttonMask; // bit 0 = Left, bit 1 = Middle, bit 2 = Right
+  final int wheelDx;
+  final int wheelDy;
+
+  const InputMouseEvent({
+    required this.normX,
+    required this.normY,
+    required this.buttonMask,
+    this.wheelDx = 0,
+    this.wheelDy = 0,
+  });
+
+  bool get isLeftDown => (buttonMask & 0x01) != 0;
+  bool get isMiddleDown => (buttonMask & 0x02) != 0;
+  bool get isRightDown => (buttonMask & 0x04) != 0;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InputMouseEvent &&
+          runtimeType == other.runtimeType &&
+          normX == other.normX &&
+          normY == other.normY &&
+          buttonMask == other.buttonMask &&
+          wheelDx == other.wheelDx &&
+          wheelDy == other.wheelDy;
+
+  @override
+  int get hashCode =>
+      normX.hashCode ^
+      normY.hashCode ^
+      buttonMask.hashCode ^
+      wheelDx.hashCode ^
+      wheelDy.hashCode;
+}
+
+/// Keyboard input event forward packet data.
+class InputKeyEvent {
+  final int keyCode;
+  final int state; // 0 = up, 1 = down
+  final int modifierMask; // bit 0 = Shift, bit 1 = Ctrl, bit 2 = Alt, bit 3 = Meta
+
+  const InputKeyEvent({
+    required this.keyCode,
+    required this.state,
+    this.modifierMask = 0,
+  });
+
+  bool get isDown => state != 0;
+  bool get isShiftDown => (modifierMask & 0x01) != 0;
+  bool get isCtrlDown => (modifierMask & 0x02) != 0;
+  bool get isAltDown => (modifierMask & 0x04) != 0;
+  bool get isMetaDown => (modifierMask & 0x08) != 0;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is InputKeyEvent &&
+          runtimeType == other.runtimeType &&
+          keyCode == other.keyCode &&
+          state == other.state &&
+          modifierMask == other.modifierMask;
+
+  @override
+  int get hashCode => keyCode.hashCode ^ state.hashCode ^ modifierMask.hashCode;
 }
 
 /// Represents the monitor resolution and refresh rate received from the dock.

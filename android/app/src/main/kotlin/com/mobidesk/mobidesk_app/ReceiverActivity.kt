@@ -16,6 +16,8 @@ import android.os.Looper
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -434,6 +436,12 @@ class ReceiverActivity : Activity() {
                         updateStatus("Connected! Streaming video...", false)
                     }
                     startInactivityWatchdog()
+
+                    // Dock Simulator Mode: Report Phone B's screen dimensions as target monitor size
+                    val metrics = resources.displayMetrics
+                    val landscapeW = maxOf(metrics.widthPixels, metrics.heightPixels)
+                    val landscapeH = minOf(metrics.widthPixels, metrics.heightPixels)
+                    usbHostReceiver?.sendDisplayInfo(landscapeW, landscapeH, 60)
                 }
 
                 onDisconnected = {
@@ -745,6 +753,135 @@ class ReceiverActivity : Activity() {
         usbHostReceiver = null
 
         Log.i(TAG, "Receiver pipeline stopped.")
+    }
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        forwardMotionEvent(ev)
+        return super.dispatchTouchEvent(ev)
+    }
+
+    override fun dispatchGenericMotionEvent(ev: MotionEvent): Boolean {
+        forwardMotionEvent(ev)
+        return super.dispatchGenericMotionEvent(ev)
+    }
+
+    private fun forwardMotionEvent(ev: MotionEvent) {
+        val receiver = usbHostReceiver ?: return
+        val w = if (::surfaceView.isInitialized && surfaceView.width > 0) surfaceView.width else rootLayout.width
+        val h = if (::surfaceView.isInitialized && surfaceView.height > 0) surfaceView.height else rootLayout.height
+        if (w <= 0 || h <= 0) return
+
+        val normX = ((ev.x.coerceIn(0f, w.toFloat()) / w) * 65535).toInt().coerceIn(0, 65535)
+        val normY = ((ev.y.coerceIn(0f, h.toFloat()) / h) * 65535).toInt().coerceIn(0, 65535)
+
+        var buttonMask = 0
+        val action = ev.actionMasked
+        if (action == MotionEvent.ACTION_DOWN || action == MotionEvent.ACTION_MOVE) {
+            buttonMask = 1
+        }
+        val buttons = ev.buttonState
+        if (buttons and MotionEvent.BUTTON_PRIMARY != 0) buttonMask = buttonMask or 1
+        if (buttons and MotionEvent.BUTTON_SECONDARY != 0) buttonMask = buttonMask or 2
+        if (buttons and MotionEvent.BUTTON_TERTIARY != 0) buttonMask = buttonMask or 4
+
+        var wheelDx = 0
+        var wheelDy = 0
+        if (action == MotionEvent.ACTION_SCROLL) {
+            wheelDx = ev.getAxisValue(MotionEvent.AXIS_HSCROLL).toInt()
+            wheelDy = ev.getAxisValue(MotionEvent.AXIS_VSCROLL).toInt()
+        }
+
+        receiver.sendInputMouse(normX, normY, buttonMask, wheelDx, wheelDy)
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val receiver = usbHostReceiver
+        if (receiver != null && receiver.isConnected()) {
+            val evdevCode = androidKeyToEvdev(event.keyCode)
+            val state = if (event.action == KeyEvent.ACTION_UP) 0 else 1
+            val modifiers = getModifierMask(event)
+            receiver.sendInputKey(evdevCode, state, modifiers)
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    private fun getModifierMask(event: KeyEvent): Int {
+        var mask = 0
+        if (event.isShiftPressed) mask = mask or 1
+        if (event.isCtrlPressed) mask = mask or 2
+        if (event.isAltPressed) mask = mask or 4
+        if (event.isMetaPressed) mask = mask or 8
+        return mask
+    }
+
+    private fun androidKeyToEvdev(keyCode: Int): Int {
+        return when (keyCode) {
+            KeyEvent.KEYCODE_ESCAPE -> 1
+            KeyEvent.KEYCODE_1 -> 2
+            KeyEvent.KEYCODE_2 -> 3
+            KeyEvent.KEYCODE_4 -> 4
+            KeyEvent.KEYCODE_5 -> 5
+            KeyEvent.KEYCODE_6 -> 6
+            KeyEvent.KEYCODE_7 -> 7
+            KeyEvent.KEYCODE_8 -> 8
+            KeyEvent.KEYCODE_9 -> 9
+            KeyEvent.KEYCODE_0 -> 11
+            KeyEvent.KEYCODE_DEL -> 14
+            KeyEvent.KEYCODE_TAB -> 15
+            KeyEvent.KEYCODE_Q -> 16
+            KeyEvent.KEYCODE_W -> 17
+            KeyEvent.KEYCODE_E -> 18
+            KeyEvent.KEYCODE_R -> 19
+            KeyEvent.KEYCODE_T -> 20
+            KeyEvent.KEYCODE_Y -> 21
+            KeyEvent.KEYCODE_U -> 22
+            KeyEvent.KEYCODE_I -> 23
+            KeyEvent.KEYCODE_O -> 24
+            KeyEvent.KEYCODE_P -> 25
+            KeyEvent.KEYCODE_ENTER -> 28
+            KeyEvent.KEYCODE_CTRL_LEFT -> 29
+            KeyEvent.KEYCODE_A -> 30
+            KeyEvent.KEYCODE_S -> 31
+            KeyEvent.KEYCODE_D -> 32
+            KeyEvent.KEYCODE_F -> 33
+            KeyEvent.KEYCODE_G -> 34
+            KeyEvent.KEYCODE_H -> 35
+            KeyEvent.KEYCODE_J -> 36
+            KeyEvent.KEYCODE_K -> 37
+            KeyEvent.KEYCODE_L -> 38
+            KeyEvent.KEYCODE_SHIFT_LEFT -> 42
+            KeyEvent.KEYCODE_Z -> 44
+            KeyEvent.KEYCODE_X -> 45
+            KeyEvent.KEYCODE_C -> 46
+            KeyEvent.KEYCODE_V -> 47
+            KeyEvent.KEYCODE_B -> 48
+            KeyEvent.KEYCODE_N -> 49
+            KeyEvent.KEYCODE_M -> 50
+            KeyEvent.KEYCODE_SHIFT_RIGHT -> 54
+            KeyEvent.KEYCODE_ALT_LEFT -> 56
+            KeyEvent.KEYCODE_SPACE -> 57
+            KeyEvent.KEYCODE_CAPS_LOCK -> 58
+            KeyEvent.KEYCODE_F1 -> 59
+            KeyEvent.KEYCODE_F2 -> 60
+            KeyEvent.KEYCODE_F3 -> 61
+            KeyEvent.KEYCODE_F4 -> 62
+            KeyEvent.KEYCODE_F5 -> 63
+            KeyEvent.KEYCODE_F6 -> 64
+            KeyEvent.KEYCODE_F7 -> 65
+            KeyEvent.KEYCODE_F8 -> 66
+            KeyEvent.KEYCODE_F9 -> 67
+            KeyEvent.KEYCODE_F10 -> 68
+            KeyEvent.KEYCODE_F11 -> 87
+            KeyEvent.KEYCODE_F12 -> 88
+            KeyEvent.KEYCODE_CTRL_RIGHT -> 97
+            KeyEvent.KEYCODE_ALT_RIGHT -> 100
+            KeyEvent.KEYCODE_DPAD_UP -> 103
+            KeyEvent.KEYCODE_DPAD_LEFT -> 105
+            KeyEvent.KEYCODE_DPAD_RIGHT -> 106
+            KeyEvent.KEYCODE_DPAD_DOWN -> 108
+            KeyEvent.KEYCODE_FORWARD_DEL -> 111
+            else -> keyCode
+        }
     }
 
     override fun onDestroy() {

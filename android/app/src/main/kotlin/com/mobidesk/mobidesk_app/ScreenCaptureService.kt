@@ -13,9 +13,11 @@ import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
+import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -75,6 +77,7 @@ class ScreenCaptureService : Service() {
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
     private var mediaProjection: MediaProjection? = null
     private var projectionCallback: MediaProjection.Callback? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -85,6 +88,13 @@ class ScreenCaptureService : Service() {
     private var presentation: MobiDeskPresentation? = null
     private var currentStreamMode: String = STREAM_MODE_MIRROR
 
+    private var savedResultCode: Int = 0
+    private var savedDataIntent: Intent? = null
+    private var currentWidth: Int = DEFAULT_WIDTH
+    private var currentHeight: Int = DEFAULT_HEIGHT
+    private var currentFps: Int = DEFAULT_FRAME_RATE
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     @Volatile
     private var cachedCodecConfig: ByteArray? = null
 
@@ -93,6 +103,69 @@ class ScreenCaptureService : Service() {
     @Volatile
     private var isStopping = false
     private var drainThread: Thread? = null
+
+    fun clampSupportedResolution(targetW: Int, targetH: Int, targetFps: Int): Triple<Int, Int, Int> {
+        var width = targetW
+        var height = targetH
+        val fps = minOf(targetFps, 30) // Cap at 30 fps for prototype
+
+        val maxPixels = 1920 * 1080
+        if (width * height > maxPixels) {
+            val scale = Math.sqrt(maxPixels.toDouble() / (width * height))
+            width = (width * scale).toInt()
+            height = (height * scale).toInt()
+        }
+
+        try {
+            val codecList = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                MediaCodecList(MediaCodecList.REGULAR_CODECS)
+            } else null
+
+            val encoderInfo = codecList?.codecInfos?.firstOrNull { info ->
+                info.isEncoder && info.supportedTypes.any { it.equals(MediaFormat.MIMETYPE_VIDEO_AVC, ignoreCase = true) }
+            }
+
+            if (encoderInfo != null) {
+                val caps = encoderInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                val videoCaps = caps.videoCapabilities
+                if (videoCaps != null) {
+                    val wAlign = videoCaps.widthAlignment.coerceAtLeast(2)
+                    val hAlign = videoCaps.heightAlignment.coerceAtLeast(2)
+                    width = (width / wAlign) * wAlign
+                    height = (height / hAlign) * hAlign
+
+                    val supportedWidths = videoCaps.supportedWidths
+                    val supportedHeights = videoCaps.supportedHeights
+                    width = width.coerceIn(supportedWidths.lower, supportedWidths.upper)
+                    height = height.coerceIn(supportedHeights.lower, supportedHeights.upper)
+
+                    if (!videoCaps.isSizeSupported(width, height)) {
+                        Log.w(TAG, "Target size ${width}x${height} not supported by encoder; falling back to 1280x720")
+                        width = 1280
+                        height = 720
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error checking VideoCapabilities: ${e.message}")
+        }
+
+        if (width % 2 != 0) width--
+        if (height % 2 != 0) height--
+        if (width < 320) width = 320
+        if (height < 240) height = 240
+
+        return Triple(width, height, fps)
+    }
+
+    fun calculateBitrate(width: Int, height: Int): Int {
+        val pixels = width * height
+        return when {
+            pixels >= 1920 * 1080 -> 8_000_000 // 8 Mbps for 1080p
+            pixels >= 1280 * 720 -> 4_000_000  // 4 Mbps for 720p
+            else -> 2_000_000                  // 2 Mbps
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -116,11 +189,15 @@ class ScreenCaptureService : Service() {
             return
         }
 
-        // 1. Acquire WakeLock for persistent continuous streaming
-        acquireWakeLock()
+        val streamMode = intent.getStringExtra(EXTRA_STREAM_MODE) ?: STREAM_MODE_MIRROR
+        val isVirtualDisplay = streamMode == STREAM_MODE_VIRTUAL_DISPLAY
 
-        // 2. Android 14 requirement: Start foreground service with MEDIA_PROJECTION type BEFORE getMediaProjection
-        startForegroundWithNotification()
+        // 1. Acquire WakeLock and WifiLock for persistent low-latency streaming
+        acquireLocks()
+
+        // 2. Android 14 requirement: Start foreground service with appropriate FGS type
+        // Use connectedDevice / specialUse for VirtualDisplay, mediaProjection for Mirror
+        startForegroundWithNotification(isVirtualDisplay)
 
         val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
         @Suppress("DEPRECATION")
@@ -129,78 +206,96 @@ class ScreenCaptureService : Service() {
         } else {
             intent.getParcelableExtra(EXTRA_DATA_INTENT)
         }
+        savedResultCode = resultCode
+        savedDataIntent = dataIntent
 
-        if (resultCode == 0 || dataIntent == null) {
-            Log.e(TAG, "Missing resultCode or dataIntent for MediaProjection.")
-            handleStop()
-            return
-        }
-
-        // 3. Obtain MediaProjection token
-        val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        val projection = try {
-            projectionManager.getMediaProjection(resultCode, dataIntent)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error obtaining MediaProjection: ${e.message}", e)
-            null
-        }
-
-        if (projection == null) {
-            Log.e(TAG, "Failed to obtain MediaProjection.")
-            handleStop()
-            return
-        }
-        mediaProjection = projection
-
-        // 4. Android 14 requirement: Register MediaProjection callback before createVirtualDisplay
-        val callback = object : MediaProjection.Callback() {
-            override fun onStop() {
-                super.onStop()
-                Log.i(TAG, "MediaProjection stopped by system callback.")
+        // 3. Obtain MediaProjection token only if mirror mode (VirtualDisplay doesn't need MediaProjection)
+        if (!isVirtualDisplay) {
+            if (resultCode == 0 || dataIntent == null) {
+                Log.e(TAG, "Missing resultCode or dataIntent for MediaProjection mirror mode.")
                 handleStop()
+                return
             }
-        }
-        projectionCallback = callback
-        projection.registerCallback(callback, Handler(Looper.getMainLooper()))
 
-        // 5. Determine display dimensions preserving aspect ratio (720p resolution, 30 FPS)
+            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            val projection = try {
+                projectionManager.getMediaProjection(resultCode, dataIntent)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error obtaining MediaProjection: ${e.message}", e)
+                null
+            }
+
+            if (projection == null) {
+                Log.e(TAG, "Failed to obtain MediaProjection.")
+                handleStop()
+                return
+            }
+            mediaProjection = projection
+
+            val callback = object : MediaProjection.Callback() {
+                override fun onStop() {
+                    super.onStop()
+                    Log.i(TAG, "MediaProjection stopped by system callback.")
+                    handleStop()
+                }
+            }
+            projectionCallback = callback
+            projection.registerCallback(callback, Handler(Looper.getMainLooper()))
+        }
+
+        // 4. Determine display dimensions preserving aspect ratio or monitor EDID
         val displayMetrics = resources.displayMetrics
-        var width = intent.getIntExtra(EXTRA_WIDTH, 0)
-        var height = intent.getIntExtra(EXTRA_HEIGHT, 0)
+        var targetW = intent.getIntExtra(EXTRA_WIDTH, 0)
+        var targetH = intent.getIntExtra(EXTRA_HEIGHT, 0)
         val dpi = intent.getIntExtra(EXTRA_DPI, displayMetrics.densityDpi)
+        val requestedFps = intent.getIntExtra(EXTRA_FPS, DEFAULT_FRAME_RATE)
 
-        if (width <= 0 || height <= 0) {
-            val screenW = displayMetrics.widthPixels
-            val screenH = displayMetrics.heightPixels
-            val isPortrait = screenH >= screenW
-            val targetShort = DEFAULT_WIDTH
-            val minDim = minOf(screenW, screenH)
-            val maxDim = maxOf(screenW, screenH)
-
-            val targetLong = if (minDim > 0) {
-                ((targetShort.toDouble() / minDim) * maxDim).toInt()
+        if (targetW <= 0 || targetH <= 0) {
+            if (isVirtualDisplay) {
+                targetW = if (MainActivity.hasReceivedDockDisplayInfo && MainActivity.lastDockWidth > 0) {
+                    MainActivity.lastDockWidth
+                } else {
+                    1920
+                }
+                targetH = if (MainActivity.hasReceivedDockDisplayInfo && MainActivity.lastDockHeight > 0) {
+                    MainActivity.lastDockHeight
+                } else {
+                    1080
+                }
             } else {
-                DEFAULT_HEIGHT
-            }
+                val screenW = displayMetrics.widthPixels
+                val screenH = displayMetrics.heightPixels
+                val isPortrait = screenH >= screenW
+                val targetShort = DEFAULT_WIDTH
+                val minDim = minOf(screenW, screenH)
+                val maxDim = maxOf(screenW, screenH)
 
-            width = if (isPortrait) targetShort else targetLong
-            height = if (isPortrait) targetLong else targetShort
+                val targetLong = if (minDim > 0) {
+                    ((targetShort.toDouble() / minDim) * maxDim).toInt()
+                } else {
+                    DEFAULT_HEIGHT
+                }
+
+                targetW = if (isPortrait) targetShort else targetLong
+                targetH = if (isPortrait) targetLong else targetShort
+            }
         }
 
-        val streamMode = intent.getStringExtra(EXTRA_STREAM_MODE) ?: STREAM_MODE_MIRROR
+        // Negotiate & clamp resolution against device hardware capabilities
+        val (width, height, frameRate) = clampSupportedResolution(targetW, targetH, requestedFps)
+        currentWidth = width
+        currentHeight = height
+        currentFps = frameRate
+
         val guacUrl = intent.getStringExtra(EXTRA_GUAC_URL)
-        val frameRate = intent.getIntExtra(EXTRA_FPS, DEFAULT_FRAME_RATE)
         currentStreamMode = streamMode
         isFallbackActive = false
 
-        // Ensure even dimensions required by H.264 / AVC video codecs
-        if (width % 2 != 0) width--
-        if (height % 2 != 0) height--
-
-        // 6. Initialize AoaAccessoryManager for USB Open Accessory bulk transfer
+        // 5. Initialize AoaAccessoryManager for USB Open Accessory bulk transfer
         val accessoryMgr = AoaAccessoryManager.getInstance(this).apply {
             onAccessoryConnected = {
-                Log.i(TAG, "USB Accessory connected to Host. Forcing instant keyframe...")
+                Log.i(TAG, "USB Accessory connected to Host. Sending negotiated display info & keyframe...")
+                sendDisplayInfoReply(currentWidth, currentHeight, currentFps)
                 cachedCodecConfig?.let { config ->
                     sendConfig(config)
                 }
@@ -222,23 +317,36 @@ class ScreenCaptureService : Service() {
                 MainActivity.lastDockHeight = h
                 MainActivity.lastDockFps = fps
                 MainActivity.hasReceivedDockDisplayInfo = true
+                val (negW, negH, negFps) = clampSupportedResolution(w, h, fps)
+                sendDisplayInfoReply(negW, negH, negFps)
+            }
+            onInputMouseReceived = { normX, normY, buttonMask, wheelDx, wheelDy ->
+                mainHandler.post {
+                    presentation?.injectMouseEvent(normX, normY, buttonMask, wheelDx, wheelDy)
+                }
+            }
+            onInputKeyReceived = { keyCode, state, modifierMask ->
+                mainHandler.post {
+                    presentation?.injectKeyEvent(keyCode, state, modifierMask)
+                }
             }
         }
         accessoryMgr.start()
         accessoryMgr.ensureSenderRunning()
         aoaAccessoryManager = accessoryMgr
 
-        // 7. Register broadcast receiver for Screen OFF / Screen ON to notify Phone B of sleep state
+        // 6. Register broadcast receiver for Screen OFF / Screen ON to notify Phone B of sleep state
         registerScreenStateReceiver()
 
-        // 8. Initialize MediaCodec video encoder for MIME type video/avc (H.264) with strictly real-time low latency
+        // 7. Initialize MediaCodec video encoder with CBR and scaled bitrate
         try {
+            val bitRate = calculateBitrate(width, height)
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
                 setInteger(
                     MediaFormat.KEY_COLOR_FORMAT,
                     MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
                 )
-                setInteger(MediaFormat.KEY_BIT_RATE, DEFAULT_BIT_RATE)
+                setInteger(MediaFormat.KEY_BIT_RATE, bitRate)
                 setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, DEFAULT_I_FRAME_INTERVAL)
 
@@ -299,12 +407,10 @@ class ScreenCaptureService : Service() {
                 return
             }
 
-            // 9. Create VirtualDisplay directing display frames to MediaCodec input surface
-            if (streamMode == STREAM_MODE_VIRTUAL_DISPLAY && !guacUrl.isNullOrEmpty()) {
+            // 8. Create VirtualDisplay directing display frames to MediaCodec input surface
+            if (isVirtualDisplay && !guacUrl.isNullOrEmpty()) {
                 try {
                     val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-                    // Exclude VIRTUAL_DISPLAY_FLAG_PUBLIC: public virtual displays require system signature
-                    // permission CAPTURE_VIDEO_OUTPUT, which throws SecurityException for 3rd-party apps.
                     val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
                                 DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY
                     val vDisplay = displayManager.createVirtualDisplay(
@@ -317,12 +423,12 @@ class ScreenCaptureService : Service() {
                     )
                     virtualDisplay = vDisplay
 
-                    Handler(Looper.getMainLooper()).post {
+                    mainHandler.post {
                         try {
                             val activity = MainActivity.currentActivity
                             if (activity == null || activity.isFinishing || activity.isDestroyed) {
                                 Log.w(TAG, "No valid foreground Activity for Presentation, activating fallback mirror")
-                                fallbackToMirror(projection, width, height, dpi, surface)
+                                fallbackToMirror(width, height, dpi, surface)
                                 return@post
                             }
                             val pres = MobiDeskPresentation(activity, vDisplay.display, guacUrl)
@@ -331,39 +437,47 @@ class ScreenCaptureService : Service() {
                             Log.i(TAG, "MobiDeskPresentation launched on VirtualDisplay at ${width}x${height} for Guacamole session.")
                         } catch (e: Exception) {
                             Log.w(TAG, "Failed to instantiate Presentation on VirtualDisplay, activating fallback mirror: ${e.message}", e)
-                            fallbackToMirror(projection, width, height, dpi, surface)
+                            fallbackToMirror(width, height, dpi, surface)
                         }
                     }
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to create Presentation VirtualDisplay, activating fallback mirror: ${e.message}", e)
-                    fallbackToMirror(projection, width, height, dpi, surface)
+                    fallbackToMirror(width, height, dpi, surface)
                 }
             } else {
-                virtualDisplay = projection.createVirtualDisplay(
-                    "MobiDeskCapture",
-                    width,
-                    height,
-                    dpi,
-                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                    surface,
-                    null,
-                    null
-                )
+                val proj = mediaProjection
+                if (proj != null) {
+                    virtualDisplay = proj.createVirtualDisplay(
+                        "MobiDeskCapture",
+                        width,
+                        height,
+                        dpi,
+                        DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                        surface,
+                        null,
+                        null
+                    )
+                } else {
+                    Log.e(TAG, "MediaProjection is null in mirror mode.")
+                    handleStop()
+                    return
+                }
             }
 
             isStreaming = true
             isServiceRunning = true
-            Log.i(TAG, "MediaCodec CBR encoder initialized (${width}x${height} @ ${frameRate} FPS, mode=$streamMode)")
+            Log.i(TAG, "MediaCodec CBR encoder initialized (${width}x${height} @ ${frameRate} FPS, bitRate=${bitRate}, mode=$streamMode)")
 
             // Force immediate keyframe on startup/connection if accessory is already connected
             if (aoaAccessoryManager?.isConnected == true) {
+                aoaAccessoryManager?.sendDisplayInfoReply(width, height, frameRate)
                 cachedCodecConfig?.let { config ->
                     aoaAccessoryManager?.sendConfig(config)
                 }
                 requestSyncFrame()
             }
 
-            // 10. In background thread, drain encoded NAL units and stream with zero-queue architecture
+            // 9. In background thread, drain encoded NAL units and stream with zero-queue architecture
             drainThread = thread(name = "ScreenCaptureDrainThread") {
                 drainCodec()
             }
@@ -376,7 +490,6 @@ class ScreenCaptureService : Service() {
     }
 
     private fun fallbackToMirror(
-        projection: MediaProjection,
         width: Int,
         height: Int,
         dpi: Int,
@@ -385,6 +498,46 @@ class ScreenCaptureService : Service() {
         try {
             virtualDisplay?.release()
         } catch (_: Exception) {}
+        virtualDisplay = null
+
+        try {
+            presentation?.dismiss()
+        } catch (_: Exception) {}
+        presentation = null
+
+        val rCode = savedResultCode
+        val dIntent = savedDataIntent
+        if (rCode == 0 || dIntent == null) {
+            Log.w(TAG, "Cannot activate fallback mirror: MediaProjection consent was not provided.")
+            return
+        }
+
+        elevateToMediaProjectionFgs()
+
+        val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        val projection = try {
+            projectionManager.getMediaProjection(rCode, dIntent)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error obtaining MediaProjection for fallback mirror: ${e.message}", e)
+            null
+        }
+
+        if (projection == null) {
+            Log.e(TAG, "Failed to obtain MediaProjection for fallback mirror.")
+            return
+        }
+        mediaProjection = projection
+
+        val callback = object : MediaProjection.Callback() {
+            override fun onStop() {
+                super.onStop()
+                Log.i(TAG, "Fallback MediaProjection stopped by system callback.")
+                handleStop()
+            }
+        }
+        projectionCallback = callback
+        projection.registerCallback(callback, Handler(Looper.getMainLooper()))
+
         try {
             virtualDisplay = projection.createVirtualDisplay(
                 "MobiDeskCaptureFallback",
@@ -626,7 +779,7 @@ class ScreenCaptureService : Service() {
         return null
     }
 
-    private fun acquireWakeLock() {
+    private fun acquireLocks() {
         if (wakeLock == null) {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(
@@ -638,9 +791,25 @@ class ScreenCaptureService : Service() {
             }
             Log.i(TAG, "WakeLock acquired for continuous streaming.")
         }
+        if (wifiLock == null) {
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            if (wifiManager != null) {
+                val lockType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                } else {
+                    @Suppress("DEPRECATION")
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                }
+                wifiLock = wifiManager.createWifiLock(lockType, "MobiDesk:ScreenCaptureWifiLock").apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+                Log.i(TAG, "WifiLock acquired for low-latency streaming.")
+            }
+        }
     }
 
-    private fun releaseWakeLock() {
+    private fun releaseLocks() {
         try {
             wakeLock?.let {
                 if (it.isHeld) {
@@ -652,6 +821,18 @@ class ScreenCaptureService : Service() {
             Log.w(TAG, "Error releasing WakeLock: ${e.message}")
         }
         wakeLock = null
+
+        try {
+            wifiLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                    Log.i(TAG, "WifiLock released.")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error releasing WifiLock: ${e.message}")
+        }
+        wifiLock = null
     }
 
     @Synchronized
@@ -727,7 +908,7 @@ class ScreenCaptureService : Service() {
         }
         mediaProjection = null
 
-        releaseWakeLock()
+        releaseLocks()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -741,16 +922,47 @@ class ScreenCaptureService : Service() {
         Log.i(TAG, "ScreenCaptureService stopped successfully.")
     }
 
-    private fun startForegroundWithNotification() {
+    private fun startForegroundWithNotification(isVirtualDisplay: Boolean) {
         val notification = createNotification()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
+            val targetType = if (isVirtualDisplay) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            } else {
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            )
+            }
+            try {
+                startForeground(NOTIFICATION_ID, notification, targetType)
+            } catch (e: SecurityException) {
+                Log.w(TAG, "Failed startForeground with type $targetType: ${e.message}")
+                if (isVirtualDisplay && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    try {
+                        startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                    } catch (e2: Exception) {
+                        Log.e(TAG, "Failed startForeground with specialUse fallback: ${e2.message}", e2)
+                        startForeground(NOTIFICATION_ID, notification)
+                    }
+                } else {
+                    startForeground(NOTIFICATION_ID, notification)
+                }
+            }
         } else {
             startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun elevateToMediaProjectionFgs() {
+        val notification = createNotification()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                startForeground(
+                    NOTIFICATION_ID,
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                )
+                Log.i(TAG, "Elevated foreground service to MEDIA_PROJECTION")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to elevate foreground service to MEDIA_PROJECTION: ${e.message}")
+            }
         }
     }
 

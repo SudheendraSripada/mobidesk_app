@@ -84,7 +84,7 @@ void main() {
     await tester.pumpAndSettle();
 
     // Verify Dashboard student profile
-    expect(find.text('Alex Mercer'), findsOneWidget);
+    expect(find.textContaining('Alex Mercer'), findsWidgets);
     expect(find.text('Roll No: CS-2024-042'), findsOneWidget);
 
     // Verify Cloud PC section
@@ -98,7 +98,7 @@ void main() {
     expect(find.text('Academics Overview'), findsOneWidget);
   });
 
-  testWidgets('Tapping Phone Mode opens PhoneCloudPcScreen with helper toolbar', (
+  testWidgets('Tapping Phone Mode opens PhoneCloudPcScreen and delegates to fullscreen activity', (
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(const MyApp());
@@ -111,38 +111,67 @@ void main() {
     await tester.tap(find.text('Phone Mode'));
     await tester.pumpAndSettle();
 
-    // Verify Phone Mode Screen is displayed with helper toolbar
+    // Verify Phone Mode Screen is displayed with connection info and actions
     expect(find.textContaining('Windows 11'), findsWidgets);
-    expect(find.text('Keyboard'), findsOneWidget);
-    expect(find.text('Ctrl'), findsOneWidget);
-    expect(find.text('Alt'), findsOneWidget);
-    expect(find.text('⊞ Win'), findsOneWidget);
-    expect(find.text('Esc'), findsOneWidget);
-    expect(find.text('Tab'), findsOneWidget);
-    expect(find.text('🖱 Right Click'), findsOneWidget);
-    expect(find.text('↻ Reconnect'), findsOneWidget);
-    expect(find.text('← Dashboard'), findsOneWidget);
+    expect(find.text('Open Fullscreen Cloud PC'), findsOneWidget);
+    expect(find.text('Back to Dashboard'), findsOneWidget);
+    expect(find.textContaining('Session:'), findsOneWidget);
 
-    // Test injecting helper key
-    await tester.tap(find.text('Ctrl'));
+    // Test clicking Open Fullscreen Cloud PC
+    await tester.tap(find.text('Open Fullscreen Cloud PC'));
     await tester.pumpAndSettle();
-    expect(find.text('Injected key: Ctrl'), findsOneWidget);
+    expect(find.text('Launching fullscreen Cloud PC session...'), findsOneWidget);
 
-    // Wait for previous SnackBar to dismiss so it doesn't obscure the toolbar
-    await tester.pump(const Duration(milliseconds: 700));
-    await tester.pumpAndSettle();
-
-    // Test injecting right-click
-    await tester.ensureVisible(find.text('🖱 Right Click'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('🖱 Right Click'));
-    await tester.pumpAndSettle();
-    expect(find.text('Injected key: Right Click'), findsOneWidget);
-
-    // Return to dashboard via AppBar close button
-    await tester.tap(find.byIcon(Icons.close_rounded));
+    // Return to dashboard via Back to Dashboard button
+    await tester.tap(find.text('Back to Dashboard'));
     await tester.pumpAndSettle();
     expect(find.text('Assigned Cloud PC'), findsOneWidget);
+  });
+
+  testWidgets('Dashboard renders cleanly on compact 360x640 phone screen without overflow', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(360, 640);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    await tester.pumpWidget(const MyApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Quick Demo Login'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Alex Mercer'), findsWidgets);
+    expect(find.text('Assigned Cloud PC'), findsOneWidget);
+    expect(find.text('Phone Mode'), findsOneWidget);
+    expect(find.text('Monitor Mode'), findsOneWidget);
+    expect(find.text('Attendance'), findsOneWidget);
+  });
+
+  testWidgets('Dashboard renders cleanly on standard 412x915 phone screen', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(412, 915);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(() {
+      tester.view.resetPhysicalSize();
+      tester.view.resetDevicePixelRatio();
+    });
+
+    await tester.pumpWidget(const MyApp());
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Quick Demo Login'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Alex Mercer'), findsWidgets);
+    expect(find.text('Assigned Cloud PC'), findsOneWidget);
+    expect(find.text('Phone Mode'), findsOneWidget);
+    expect(find.text('Monitor Mode'), findsOneWidget);
+    expect(find.text('Attendance'), findsOneWidget);
   });
 
   testWidgets('Tapping Monitor Mode guides through dock detection and streaming', (

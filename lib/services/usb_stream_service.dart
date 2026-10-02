@@ -148,4 +148,40 @@ class UsbStreamService {
       return false;
     }
   }
+
+  /// Requests exemption from Android battery optimization to prevent stream throttling.
+  static Future<bool> requestIgnoreBatteryOptimizations() async {
+    try {
+      final res = await _channel.invokeMethod<bool>('requestIgnoreBatteryOptimizations');
+      return res ?? false;
+    } on MissingPluginException {
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Checks whether MobiDesk is exempt from Android battery optimization.
+  static Future<bool> isIgnoringBatteryOptimizations() async {
+    try {
+      final res = await _channel.invokeMethod<bool>('isIgnoringBatteryOptimizations');
+      return res ?? true;
+    } on MissingPluginException {
+      return true;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  /// Checks if the app was launched by a USB accessory attachment intent.
+  static Future<bool> checkAutoLaunchMonitor() async {
+    try {
+      final res = await _channel.invokeMethod<bool>('checkAutoLaunchMonitor');
+      return res ?? false;
+    } on MissingPluginException {
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
 }

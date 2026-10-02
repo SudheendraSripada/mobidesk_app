@@ -8,8 +8,10 @@ import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
+import android.view.GestureDetector
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -79,7 +81,8 @@ class PhoneCloudPcActivity : Activity() {
                 databaseEnabled = true
                 useWideViewPort = true
                 loadWithOverviewMode = true
-                setSupportZoom(false)
+                setSupportZoom(true)
+                builtInZoomControls = true
                 displayZoomControls = false
                 mediaPlaybackRequiresUserGesture = false
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
@@ -87,6 +90,15 @@ class PhoneCloudPcActivity : Activity() {
             }
             isFocusable = true
             isFocusableInTouchMode = true
+            val gestureDetector = GestureDetector(this@PhoneCloudPcActivity, object : GestureDetector.SimpleOnGestureListener() {
+                override fun onLongPress(e: MotionEvent) {
+                    injectRightClickAt(e.x, e.y)
+                }
+            })
+            setOnTouchListener { _, event ->
+                gestureDetector.onTouchEvent(event)
+                false
+            }
             webViewClient = object : WebViewClient() {}
             webChromeClient = object : WebChromeClient() {}
             loadUrl(sessionUrl)
@@ -221,6 +233,26 @@ class PhoneCloudPcActivity : Activity() {
         """.trimIndent()
         webView.evaluateJavascript(js, null)
         Toast.makeText(this, "Right click dispatched", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun injectRightClickAt(x: Float, y: Float) {
+        val js = """
+            (function() {
+                var el = document.elementFromPoint($x, $y) || document.body;
+                var evt = new MouseEvent('contextmenu', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                    button: 2,
+                    buttons: 2,
+                    clientX: $x,
+                    clientY: $y
+                });
+                el.dispatchEvent(evt);
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(js, null)
+        Toast.makeText(this, "Right click at (${x.toInt()}, ${y.toInt()})", Toast.LENGTH_SHORT).show()
     }
 
     private fun injectKeyEvent(keyCode: Int, keyName: String? = null, jsKey: String? = null) {

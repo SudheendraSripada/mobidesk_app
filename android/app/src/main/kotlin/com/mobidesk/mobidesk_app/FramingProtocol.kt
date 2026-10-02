@@ -26,6 +26,8 @@ object FramingProtocol {
     const val TYPE_HEARTBEAT: Byte = 3
     const val TYPE_SLEEP: Byte = 4
     const val TYPE_DISPLAY_INFO: Byte = 5
+    const val TYPE_INPUT_MOUSE: Byte = 6
+    const val TYPE_INPUT_KEY: Byte = 7
 
     const val FLAG_NONE: Byte = 0x00
     const val FLAG_KEYFRAME: Byte = 0x01
@@ -95,5 +97,139 @@ object FramingProtocol {
         val payload = createDisplayInfoPayload(width, height, fps)
         writeFrame(out, TYPE_DISPLAY_INFO, FLAG_NONE, payload, 0, payload.size, 0L)
     }
+
+    /**
+     * Creates an 8-byte binary payload for TYPE_INPUT_MOUSE.
+     * Big-endian layout:
+     * - [0..1] normX (uint16)
+     * - [2..3] normY (uint16)
+     * - [4]    buttonMask (uint8: bit 0 = Left, bit 1 = Middle, bit 2 = Right)
+     * - [5]    wheelDx (int8)
+     * - [6]    wheelDy (int8)
+     * - [7]    reserved (uint8: 0)
+     */
+    fun createInputMousePayload(
+        normX: Int,
+        normY: Int,
+        buttonMask: Int,
+        wheelDx: Int = 0,
+        wheelDy: Int = 0
+    ): ByteArray {
+        val buffer = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN)
+        buffer.putShort(normX.toShort())
+        buffer.putShort(normY.toShort())
+        buffer.put((buttonMask and 0xFF).toByte())
+        buffer.put((wheelDx and 0xFF).toByte())
+        buffer.put((wheelDy and 0xFF).toByte())
+        buffer.put(0.toByte()) // reserved
+        return buffer.array()
+    }
+
+    /**
+     * Parses an 8-byte TYPE_INPUT_MOUSE payload.
+     */
+    fun parseInputMouse(payload: ByteArray): InputMouseData {
+        if (payload.size < 8) {
+            throw IllegalArgumentException("Payload too short for InputMouse: ${payload.size} bytes (required: 8)")
+        }
+        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+        val normX = buffer.short.toInt() and 0xFFFF
+        val normY = buffer.short.toInt() and 0xFFFF
+        val buttonMask = buffer.get().toInt() and 0xFF
+        val wheelDx = buffer.get().toInt()
+        val wheelDy = buffer.get().toInt()
+        return InputMouseData(normX, normY, buttonMask, wheelDx, wheelDy)
+    }
+
+    /**
+     * Writes a TYPE_INPUT_MOUSE packet directly to an output stream.
+     */
+    @Synchronized
+    fun writeInputMouse(
+        out: OutputStream,
+        normX: Int,
+        normY: Int,
+        buttonMask: Int,
+        wheelDx: Int = 0,
+        wheelDy: Int = 0,
+        ptsUs: Long = 0L
+    ) {
+        val payload = createInputMousePayload(normX, normY, buttonMask, wheelDx, wheelDy)
+        writeFrame(out, TYPE_INPUT_MOUSE, FLAG_NONE, payload, 0, payload.size, ptsUs)
+    }
+
+    /**
+     * Creates an 8-byte binary payload for TYPE_INPUT_KEY.
+     * Big-endian layout:
+     * - [0..3] keyCode (uint32)
+     * - [4]    state (uint8: 1 = down, 0 = up)
+     * - [5]    modifierMask (uint8: bit 0 = Shift, bit 1 = Ctrl, bit 2 = Alt, bit 3 = Meta)
+     * - [6..7] reserved (uint16: 0)
+     */
+    fun createInputKeyPayload(
+        keyCode: Int,
+        state: Int,
+        modifierMask: Int = 0
+    ): ByteArray {
+        val buffer = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN)
+        buffer.putInt(keyCode)
+        buffer.put((state and 0xFF).toByte())
+        buffer.put((modifierMask and 0xFF).toByte())
+        buffer.putShort(0.toShort()) // reserved
+        return buffer.array()
+    }
+
+    /**
+     * Parses an 8-byte TYPE_INPUT_KEY payload.
+     */
+    fun parseInputKey(payload: ByteArray): InputKeyData {
+        if (payload.size < 8) {
+            throw IllegalArgumentException("Payload too short for InputKey: ${payload.size} bytes (required: 8)")
+        }
+        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+        val keyCode = buffer.int
+        val state = buffer.get().toInt() and 0xFF
+        val modifierMask = buffer.get().toInt() and 0xFF
+        return InputKeyData(keyCode, state, modifierMask)
+    }
+
+    /**
+     * Writes a TYPE_INPUT_KEY packet directly to an output stream.
+     */
+    @Synchronized
+    fun writeInputKey(
+        out: OutputStream,
+        keyCode: Int,
+        state: Int,
+        modifierMask: Int = 0,
+        ptsUs: Long = 0L
+    ) {
+        val payload = createInputKeyPayload(keyCode, state, modifierMask)
+        writeFrame(out, TYPE_INPUT_KEY, FLAG_NONE, payload, 0, payload.size, ptsUs)
+    }
+}
+
+data class InputMouseData(
+    val normX: Int,
+    val normY: Int,
+    val buttonMask: Int,
+    val wheelDx: Int = 0,
+    val wheelDy: Int = 0
+) {
+    val isLeftDown: Boolean get() = (buttonMask and 0x01) != 0
+    val isMiddleDown: Boolean get() = (buttonMask and 0x02) != 0
+    val isRightDown: Boolean get() = (buttonMask and 0x04) != 0
+}
+
+data class InputKeyData(
+    val keyCode: Int,
+    val state: Int,
+    val modifierMask: Int = 0
+) {
+    val isDown: Boolean get() = state != 0
+    val isShiftDown: Boolean get() = (modifierMask and 0x01) != 0
+    val isCtrlDown: Boolean get() = (modifierMask and 0x02) != 0
+    val isAltDown: Boolean get() = (modifierMask and 0x04) != 0
+    val isMetaDown: Boolean get() = (modifierMask and 0x08) != 0
 }
 

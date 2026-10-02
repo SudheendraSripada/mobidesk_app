@@ -691,6 +691,74 @@ class UsbHostReceiver(
         }
     }
 
+    /**
+     * Sends display info (width, height, fps) to sender over Bulk OUT endpoint (Dock simulator mode).
+     */
+    fun sendDisplayInfo(width: Int, height: Int, fps: Int) {
+        val conn = usbConnection ?: return
+        val outEp = outEndpoint ?: return
+        thread(name = "AoaDisplayInfoThread") {
+            try {
+                val payload = FramingProtocol.createDisplayInfoPayload(width, height, fps)
+                val header = FramingProtocol.createHeader(
+                    FramingProtocol.TYPE_DISPLAY_INFO,
+                    FramingProtocol.FLAG_NONE,
+                    payload.size,
+                    0L
+                )
+                val pkt = ByteArray(header.size + payload.size)
+                System.arraycopy(header, 0, pkt, 0, header.size)
+                System.arraycopy(payload, 0, pkt, header.size, payload.size)
+                conn.bulkTransfer(outEp, pkt, pkt.size, 1000)
+                Log.i(TAG, "Sent DISPLAY_INFO (${width}x${height}@$fps) to sender over Bulk OUT endpoint.")
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not send DISPLAY_INFO: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Forwards mouse input packet to sender over Bulk OUT endpoint.
+     */
+    fun sendInputMouse(normX: Int, normY: Int, buttonMask: Int, wheelDx: Int = 0, wheelDy: Int = 0) {
+        val conn = usbConnection ?: return
+        val outEp = outEndpoint ?: return
+        try {
+            val payload = FramingProtocol.createInputMousePayload(normX, normY, buttonMask, wheelDx, wheelDy)
+            val header = FramingProtocol.createHeader(
+                FramingProtocol.TYPE_INPUT_MOUSE,
+                FramingProtocol.FLAG_NONE,
+                payload.size,
+                0L
+            )
+            val pkt = ByteArray(header.size + payload.size)
+            System.arraycopy(header, 0, pkt, 0, header.size)
+            System.arraycopy(payload, 0, pkt, header.size, payload.size)
+            conn.bulkTransfer(outEp, pkt, pkt.size, 100)
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Forwards keyboard input packet to sender over Bulk OUT endpoint.
+     */
+    fun sendInputKey(keyCode: Int, state: Int, modifierMask: Int) {
+        val conn = usbConnection ?: return
+        val outEp = outEndpoint ?: return
+        try {
+            val payload = FramingProtocol.createInputKeyPayload(keyCode, state, modifierMask)
+            val header = FramingProtocol.createHeader(
+                FramingProtocol.TYPE_INPUT_KEY,
+                FramingProtocol.FLAG_NONE,
+                payload.size,
+                0L
+            )
+            val pkt = ByteArray(header.size + payload.size)
+            System.arraycopy(header, 0, pkt, 0, header.size)
+            System.arraycopy(payload, 0, pkt, header.size, payload.size)
+            conn.bulkTransfer(outEp, pkt, pkt.size, 100)
+        } catch (_: Exception) {}
+    }
+
     private fun cleanupConnection() {
         val wasConnected = isStreaming || usbConnection != null
         isStreaming = false

@@ -82,6 +82,8 @@ class AoaAccessoryManager(private val context: Context) {
     var onAccessoryDisconnected: (() -> Unit)? = null
     var onKeyframeRequested: (() -> Unit)? = null
     var onDisplayInfoReceived: ((width: Int, height: Int, fps: Int) -> Unit)? = null
+    var onInputMouseReceived: ((normX: Int, normY: Int, buttonMask: Int, wheelDx: Int, wheelDy: Int) -> Unit)? = null
+    var onInputKeyReceived: ((keyCode: Int, state: Int, modifierMask: Int) -> Unit)? = null
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
@@ -281,6 +283,22 @@ class AoaAccessoryManager(private val context: Context) {
                         Log.e(TAG, "Failed to parse DISPLAY_INFO payload from host: ${e.message}", e)
                     }
                 }
+                FramingProtocol.TYPE_INPUT_MOUSE -> {
+                    try {
+                        val mouse = FramingProtocol.parseInputMouse(payload)
+                        onInputMouseReceived?.invoke(mouse.normX, mouse.normY, mouse.buttonMask, mouse.wheelDx, mouse.wheelDy)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to parse INPUT_MOUSE from host: ${e.message}", e)
+                    }
+                }
+                FramingProtocol.TYPE_INPUT_KEY -> {
+                    try {
+                        val key = FramingProtocol.parseInputKey(payload)
+                        onInputKeyReceived?.invoke(key.keyCode, key.state, key.modifierMask)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to parse INPUT_KEY from host: ${e.message}", e)
+                    }
+                }
             }
         }
 
@@ -314,6 +332,14 @@ class AoaAccessoryManager(private val context: Context) {
      */
     fun sendSleepState(isAsleep: Boolean) {
         sender.sendSleepState(isAsleep)
+    }
+
+    /**
+     * Send negotiated display info reply back to host dock.
+     */
+    fun sendDisplayInfoReply(width: Int, height: Int, fps: Int) {
+        val payload = FramingProtocol.createDisplayInfoPayload(width, height, fps)
+        sender.sendFrame(FramingProtocol.TYPE_DISPLAY_INFO, FramingProtocol.FLAG_NONE, 0L, payload, 0, payload.size)
     }
 
     /**

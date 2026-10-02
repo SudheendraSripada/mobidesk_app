@@ -46,7 +46,7 @@ class PhoneCloudPcActivity : Activity() {
 
     private lateinit var rootLayout: FrameLayout
     private lateinit var webView: WebView
-    private lateinit var floatingToolbar: LinearLayout
+    private lateinit var floatingToolbar: View
     private var sessionUrl: String = DEFAULT_URL
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -79,8 +79,7 @@ class PhoneCloudPcActivity : Activity() {
                 databaseEnabled = true
                 useWideViewPort = true
                 loadWithOverviewMode = true
-                setSupportZoom(true)
-                builtInZoomControls = true
+                setSupportZoom(false)
                 displayZoomControls = false
                 mediaPlaybackRequiresUserGesture = false
                 cacheMode = WebSettings.LOAD_DEFAULT
@@ -169,6 +168,11 @@ class PhoneCloudPcActivity : Activity() {
             injectKeyEvent(KeyEvent.KEYCODE_TAB)
         })
 
+        // Right Click Helper Key
+        toolbarPanel.addView(createToolButton("🖱 Right Click") {
+            injectRightClick()
+        })
+
         // Reconnect
         toolbarPanel.addView(createToolButton("↻ Reconnect") {
             webView.loadUrl(sessionUrl)
@@ -176,18 +180,30 @@ class PhoneCloudPcActivity : Activity() {
         })
 
         // Disconnect
-        toolbarPanel.addView(createToolButton("✕ Exit") {
+        toolbarPanel.addView(createToolButton("✕ Disconnect") {
+            Toast.makeText(this, "Disconnected from Cloud PC", Toast.LENGTH_SHORT).show()
+            finish()
+        })
+
+        // Back to Dashboard
+        toolbarPanel.addView(createToolButton("← Dashboard") {
             finish()
         })
 
         scrollContainer.addView(toolbarPanel)
-        floatingToolbar = toolbarPanel
+        floatingToolbar = scrollContainer
     }
 
     private fun toggleSoftKeyboard() {
         val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
         webView.requestFocus()
         imm.toggleSoftInput(InputMethodManager.SHOW_FORCED, 0)
+    }
+
+    private fun injectRightClick() {
+        webView.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_MENU))
+        webView.dispatchKeyEvent(KeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_MENU))
+        Toast.makeText(this, "Right click (Context Menu) dispatched", Toast.LENGTH_SHORT).show()
     }
 
     private fun injectKeyEvent(keyCode: Int) {

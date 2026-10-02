@@ -197,7 +197,7 @@ class ScreenCaptureService : Service() {
         if (height % 2 != 0) height--
 
         // 6. Initialize AoaAccessoryManager for USB Open Accessory bulk transfer
-        val accessoryMgr = AoaAccessoryManager(this).apply {
+        val accessoryMgr = AoaAccessoryManager.getInstance(this).apply {
             onAccessoryConnected = {
                 Log.i(TAG, "USB Accessory connected to Host. Forcing instant keyframe...")
                 cachedCodecConfig?.let { config ->
@@ -214,6 +214,13 @@ class ScreenCaptureService : Service() {
                     sendConfig(config)
                 }
                 requestSyncFrame()
+            }
+            onDisplayInfoReceived = { w, h, fps ->
+                Log.i(TAG, "Host reported display info in service: ${w}x${h} @ ${fps}fps")
+                MainActivity.lastDockWidth = w
+                MainActivity.lastDockHeight = h
+                MainActivity.lastDockFps = fps
+                MainActivity.hasReceivedDockDisplayInfo = true
             }
         }
         accessoryMgr.start()
@@ -688,9 +695,9 @@ class ScreenCaptureService : Service() {
         inputSurface = null
 
         try {
-            aoaAccessoryManager?.stop()
+            aoaAccessoryManager?.sender?.stop()
         } catch (e: Exception) {
-            Log.w(TAG, "Error stopping aoaAccessoryManager: ${e.message}")
+            Log.w(TAG, "Error stopping aoaAccessoryManager sender: ${e.message}")
         }
         aoaAccessoryManager = null
         cachedCodecConfig = null

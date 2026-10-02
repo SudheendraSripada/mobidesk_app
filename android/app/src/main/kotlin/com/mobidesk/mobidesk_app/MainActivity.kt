@@ -31,6 +31,21 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+
+        // Initialize and start shared AoaAccessoryManager to detect dock attachment and read monitor info
+        try {
+            val aoaManager = AoaAccessoryManager.getInstance(this)
+            aoaManager.onDisplayInfoReceived = { w, h, fps ->
+                lastDockWidth = w
+                lastDockHeight = h
+                lastDockFps = fps
+                hasReceivedDockDisplayInfo = true
+            }
+            aoaManager.start()
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "Failed to start AoaAccessoryManager: ${e.message}")
+        }
+
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "startStream", "start" -> {
@@ -78,14 +93,19 @@ class MainActivity : FlutterActivity() {
                 }
                 "getDockDisplayInfo" -> {
                     try {
+                        val aoa = AoaAccessoryManager.getInstance(this)
                         val usbManager = getSystemService(Context.USB_SERVICE) as? UsbManager
-                        val hasAccessory = usbManager?.accessoryList?.isNotEmpty() == true
+                        val hasAccessory = aoa.isConnected || (usbManager?.accessoryList?.isNotEmpty() == true)
+                        val hasInfo = hasReceivedDockDisplayInfo || aoa.hasDisplayInfo
+                        val width = if (hasInfo) lastDockWidth.takeIf { it > 0 } ?: aoa.lastDisplayWidth else lastDockWidth
+                        val height = if (hasInfo) lastDockHeight.takeIf { it > 0 } ?: aoa.lastDisplayHeight else lastDockHeight
+                        val fps = if (hasInfo) lastDockFps.takeIf { it > 0 } ?: aoa.lastDisplayFps else lastDockFps
                         val info = mapOf(
                             "hasDock" to hasAccessory,
-                            "hasReceivedInfo" to hasReceivedDockDisplayInfo,
-                            "width" to lastDockWidth,
-                            "height" to lastDockHeight,
-                            "fps" to lastDockFps,
+                            "hasReceivedInfo" to hasInfo,
+                            "width" to width,
+                            "height" to height,
+                            "fps" to fps,
                             "isStreaming" to ScreenCaptureService.isServiceRunning,
                             "isFallback" to ScreenCaptureService.isFallbackActive
                         )
@@ -100,8 +120,9 @@ class MainActivity : FlutterActivity() {
                 }
                 "getUsbStatus" -> {
                     try {
+                        val aoa = AoaAccessoryManager.getInstance(this)
                         val usbManager = getSystemService(Context.USB_SERVICE) as? UsbManager
-                        val hasAccessory = usbManager?.accessoryList?.isNotEmpty() == true
+                        val hasAccessory = aoa.isConnected || (usbManager?.accessoryList?.isNotEmpty() == true)
                         val deviceCount = usbManager?.deviceList?.size ?: 0
                         val status = mapOf(
                             "hasAccessory" to hasAccessory,

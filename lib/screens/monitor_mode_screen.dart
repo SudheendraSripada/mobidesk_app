@@ -357,10 +357,12 @@ class _MonitorModeScreenState extends State<MonitorModeScreen> {
                           color: colorScheme.primary,
                         ),
                         const SizedBox(width: 8),
-                        Text(
-                          widget.vm.name,
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.bold,
+                        Expanded(
+                          child: Text(
+                            widget.vm.name,
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
                         ),
                       ],

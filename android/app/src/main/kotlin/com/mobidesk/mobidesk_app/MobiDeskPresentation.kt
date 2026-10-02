@@ -19,17 +19,20 @@ import android.widget.FrameLayout
  * seamlessly even when the phone screen is turned off.
  */
 class MobiDeskPresentation(
-    context: Context,
+    outerContext: Context,
     display: Display,
     private val sessionUrl: String
-) : Presentation(context, display) {
+) : Presentation(outerContext, display) {
 
     private var webView: WebView? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val root = FrameLayout(context).apply {
+        // Use context (inherited from Dialog/Presentation), which encapsulates the VirtualDisplay metrics
+        val displayContext = context
+
+        val root = FrameLayout(displayContext).apply {
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -37,7 +40,7 @@ class MobiDeskPresentation(
             setBackgroundColor(Color.BLACK)
         }
 
-        val wv = WebView(context).apply {
+        val wv = WebView(displayContext).apply {
             layoutParams = FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT

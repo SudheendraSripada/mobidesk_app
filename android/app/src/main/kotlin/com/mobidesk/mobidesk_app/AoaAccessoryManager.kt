@@ -25,6 +25,15 @@ class AoaAccessoryManager(private val context: Context) {
     companion object {
         private const val TAG = "AoaAccessoryManager"
         private const val ACTION_USB_PERMISSION = "com.mobidesk.USB_ACCESSORY_PERMISSION"
+
+        @Volatile
+        private var instance: AoaAccessoryManager? = null
+
+        fun getInstance(context: Context): AoaAccessoryManager {
+            return instance ?: synchronized(this) {
+                instance ?: AoaAccessoryManager(context.applicationContext).also { instance = it }
+            }
+        }
     }
 
     private val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
@@ -52,6 +61,22 @@ class AoaAccessoryManager(private val context: Context) {
 
     @Volatile
     private var latestConfigHeader: ByteArray? = null
+
+    @Volatile
+    var lastDisplayWidth: Int = 1920
+        private set
+
+    @Volatile
+    var lastDisplayHeight: Int = 1080
+        private set
+
+    @Volatile
+    var lastDisplayFps: Int = 60
+        private set
+
+    @Volatile
+    var hasDisplayInfo: Boolean = false
+        private set
 
     var onAccessoryConnected: (() -> Unit)? = null
     var onAccessoryDisconnected: (() -> Unit)? = null
@@ -227,6 +252,14 @@ class AoaAccessoryManager(private val context: Context) {
                     try {
                         val (w, h, fps) = FramingProtocol.parseDisplayInfo(payload)
                         Log.i(TAG, "Host reported display info: ${w}x${h} @ ${fps}fps")
+                        lastDisplayWidth = w
+                        lastDisplayHeight = h
+                        lastDisplayFps = fps
+                        hasDisplayInfo = true
+                        MainActivity.lastDockWidth = w
+                        MainActivity.lastDockHeight = h
+                        MainActivity.lastDockFps = fps
+                        MainActivity.hasReceivedDockDisplayInfo = true
                         onDisplayInfoReceived?.invoke(w, h, fps)
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to parse DISPLAY_INFO payload from host: ${e.message}", e)

@@ -1,3 +1,15 @@
 {
-    "java.compile.nullAnalysis.mode": "automatic"
+    "java.compile.nullAnalysis.mode": "automatic",
+    "dart.flutterSdkPath": "/home/codespace/flutter",
+    "dart.analysisExcludedFolders": [
+        "build/**",
+        ".dart_tool/**"
+    ],
+    "editor.formatOnSave": true,
+    "files.insertFinalNewline": true,
+    "terminal.integrated.env.linux": {
+        "ANDROID_HOME": "/usr/lib/android-sdk",
+        "ANDROID_SDK_ROOT": "/usr/lib/android-sdk",
+        "CHROME_EXECUTABLE": "/usr/bin/chromium-browser"
+    }
 }

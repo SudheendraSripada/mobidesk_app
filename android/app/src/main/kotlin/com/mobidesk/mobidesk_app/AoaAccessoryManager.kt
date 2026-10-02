@@ -56,6 +56,7 @@ class AoaAccessoryManager(private val context: Context) {
     var onAccessoryConnected: (() -> Unit)? = null
     var onAccessoryDisconnected: (() -> Unit)? = null
     var onKeyframeRequested: (() -> Unit)? = null
+    var onDisplayInfoReceived: ((width: Int, height: Int, fps: Int) -> Unit)? = null
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: Intent?) {
@@ -216,20 +217,31 @@ class AoaAccessoryManager(private val context: Context) {
 
     private fun listenHostSignals() {
         val inStream = inputStream ?: return
-        val buffer = ByteArray(64)
+        val demuxer = FramingDemuxer { type, _, _, payload ->
+            when (type) {
+                FramingProtocol.TYPE_HEARTBEAT, FramingProtocol.TYPE_CONFIG -> {
+                    Log.i(TAG, "Host requested sync frame (keyframe)")
+                    onKeyframeRequested?.invoke()
+                }
+                FramingProtocol.TYPE_DISPLAY_INFO -> {
+                    try {
+                        val (w, h, fps) = FramingProtocol.parseDisplayInfo(payload)
+                        Log.i(TAG, "Host reported display info: ${w}x${h} @ ${fps}fps")
+                        onDisplayInfoReceived?.invoke(w, h, fps)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to parse DISPLAY_INFO payload from host: ${e.message}", e)
+                    }
+                }
+            }
+        }
+
+        val buffer = ByteArray(4096)
         while (isRunning && isConnected) {
             try {
                 val read = inStream.read(buffer)
                 if (read == -1) break
-                if (read >= 3) {
-                    // Check if host sent a heartbeat or request
-                    if (buffer[0] == FramingProtocol.MAGIC_0 && buffer[1] == FramingProtocol.MAGIC_1) {
-                        val type = buffer[2]
-                        if (type == FramingProtocol.TYPE_HEARTBEAT || type == FramingProtocol.TYPE_CONFIG) {
-                            Log.i(TAG, "Host requested sync frame (keyframe)")
-                            onKeyframeRequested?.invoke()
-                        }
-                    }
+                if (read > 0) {
+                    demuxer.feedData(buffer, 0, read)
                 }
             } catch (e: IOException) {
                 if (isConnected) {

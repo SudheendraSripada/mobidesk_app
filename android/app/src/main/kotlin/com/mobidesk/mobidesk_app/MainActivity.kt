@@ -15,30 +15,49 @@ class MainActivity : FlutterActivity() {
     private val REQUEST_CODE_SCREEN_CAPTURE = 1002
     private var pendingResult: MethodChannel.Result? = null
 
+    // Track requested parameters for stream initialization
+    private var requestedStreamMode = ScreenCaptureService.STREAM_MODE_MIRROR
+    private var requestedGuacUrl: String? = null
+    private var requestedWidth = 1920
+    private var requestedHeight = 1080
+    private var requestedFps = 60
+
+    companion object {
+        var lastDockWidth = 1920
+        var lastDockHeight = 1080
+        var lastDockFps = 60
+        var hasReceivedDockDisplayInfo = false
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
             when (call.method) {
                 "startStream", "start" -> {
-                    if (ScreenCaptureService.isServiceRunning) {
-                        result.success(true)
-                        return@setMethodCallHandler
+                    requestedStreamMode = ScreenCaptureService.STREAM_MODE_MIRROR
+                    requestedGuacUrl = null
+                    promptScreenCapture(result)
+                }
+                "startMonitorStream" -> {
+                    requestedStreamMode = ScreenCaptureService.STREAM_MODE_VIRTUAL_DISPLAY
+                    requestedGuacUrl = call.argument<String>("guacUrl")
+                    val customWidth = call.argument<Int>("width") ?: lastDockWidth
+                    val customHeight = call.argument<Int>("height") ?: lastDockHeight
+                    val customFps = call.argument<Int>("fps") ?: lastDockFps
+                    requestedWidth = customWidth
+                    requestedHeight = customHeight
+                    requestedFps = customFps
+                    promptScreenCapture(result)
+                }
+                "startPhoneCloudPc" -> {
+                    val sessionUrl = call.argument<String>("sessionUrl")
+                    val intent = Intent(this, PhoneCloudPcActivity::class.java).apply {
+                        if (!sessionUrl.isNullOrEmpty()) {
+                            putExtra(PhoneCloudPcActivity.EXTRA_SESSION_URL, sessionUrl)
+                        }
                     }
-                    if (pendingResult != null) {
-                        result.error("BUSY", "Another consent request is pending", null)
-                        return@setMethodCallHandler
-                    }
-                    pendingResult = result
-
-                    try {
-                        // Android 14 requirement: Prompt user consent per session
-                        val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                        val captureIntent = projectionManager.createScreenCaptureIntent()
-                        startActivityForResult(captureIntent, REQUEST_CODE_SCREEN_CAPTURE)
-                    } catch (e: Exception) {
-                        pendingResult = null
-                        result.error("CONSENT_ERROR", "Failed to prompt for screen capture consent: ${e.message}", null)
-                    }
+                    startActivity(intent)
+                    result.success(true)
                 }
                 "stopStream", "stop" -> {
                     val stopIntent = Intent(this, ScreenCaptureService::class.java).apply {
@@ -54,6 +73,27 @@ class MainActivity : FlutterActivity() {
                 "isStreaming", "getStatus" -> {
                     result.success(ScreenCaptureService.isServiceRunning)
                 }
+                "isFallbackActive" -> {
+                    result.success(ScreenCaptureService.isFallbackActive)
+                }
+                "getDockDisplayInfo" -> {
+                    try {
+                        val usbManager = getSystemService(Context.USB_SERVICE) as? UsbManager
+                        val hasAccessory = usbManager?.accessoryList?.isNotEmpty() == true
+                        val info = mapOf(
+                            "hasDock" to hasAccessory,
+                            "hasReceivedInfo" to hasReceivedDockDisplayInfo,
+                            "width" to lastDockWidth,
+                            "height" to lastDockHeight,
+                            "fps" to lastDockFps,
+                            "isStreaming" to ScreenCaptureService.isServiceRunning,
+                            "isFallback" to ScreenCaptureService.isFallbackActive
+                        )
+                        result.success(info)
+                    } catch (e: Exception) {
+                        result.error("DISPLAY_INFO_ERROR", "Failed to get display info: ${e.message}", null)
+                    }
+                }
                 "startReceiver" -> {
                     val usbManager = getSystemService(Context.USB_SERVICE) as? UsbManager
                     UsbHostReceiver.handleStartReceiver(this, usbManager, result)
@@ -66,7 +106,8 @@ class MainActivity : FlutterActivity() {
                         val status = mapOf(
                             "hasAccessory" to hasAccessory,
                             "deviceCount" to deviceCount,
-                            "isStreaming" to ScreenCaptureService.isServiceRunning
+                            "isStreaming" to ScreenCaptureService.isServiceRunning,
+                            "isFallback" to ScreenCaptureService.isFallbackActive
                         )
                         result.success(status)
                     } catch (e: Exception) {
@@ -77,6 +118,28 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
+        }
+    }
+
+    private fun promptScreenCapture(result: MethodChannel.Result) {
+        if (ScreenCaptureService.isServiceRunning) {
+            result.success(true)
+            return
+        }
+        if (pendingResult != null) {
+            result.error("BUSY", "Another consent request is pending", null)
+            return
+        }
+        pendingResult = result
+
+        try {
+            // Android 14 requirement: Prompt user consent per session
+            val projectionManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            val captureIntent = projectionManager.createScreenCaptureIntent()
+            startActivityForResult(captureIntent, REQUEST_CODE_SCREEN_CAPTURE)
+        } catch (e: Exception) {
+            pendingResult = null
+            result.error("CONSENT_ERROR", "Failed to prompt for screen capture consent: ${e.message}", null)
         }
     }
 
@@ -92,20 +155,24 @@ class MainActivity : FlutterActivity() {
                 val screenH = metrics.heightPixels
                 val isPortrait = screenH >= screenW
 
-                // Target 720p while preserving device screen aspect ratio
-                val targetShort = ScreenCaptureService.DEFAULT_WIDTH
-                val minDim = minOf(screenW, screenH)
-                val maxDim = maxOf(screenW, screenH)
-                val targetLong = if (minDim > 0) {
-                    ((targetShort.toDouble() / minDim) * maxDim).toInt().let {
-                        if (it % 2 != 0) it - 1 else it
-                    }
+                val (width, height, fps) = if (requestedStreamMode == ScreenCaptureService.STREAM_MODE_VIRTUAL_DISPLAY) {
+                    Triple(requestedWidth, requestedHeight, requestedFps)
                 } else {
-                    ScreenCaptureService.DEFAULT_HEIGHT
+                    // Target 720p preserving device screen aspect ratio
+                    val targetShort = ScreenCaptureService.DEFAULT_WIDTH
+                    val minDim = minOf(screenW, screenH)
+                    val maxDim = maxOf(screenW, screenH)
+                    val targetLong = if (minDim > 0) {
+                        ((targetShort.toDouble() / minDim) * maxDim).toInt().let {
+                            if (it % 2 != 0) it - 1 else it
+                        }
+                    } else {
+                        ScreenCaptureService.DEFAULT_HEIGHT
+                    }
+                    val w = if (isPortrait) targetShort else targetLong
+                    val h = if (isPortrait) targetLong else targetShort
+                    Triple(w, h, ScreenCaptureService.DEFAULT_FRAME_RATE)
                 }
-
-                val width = if (isPortrait) targetShort else targetLong
-                val height = if (isPortrait) targetLong else targetShort
 
                 val serviceIntent = Intent(this, ScreenCaptureService::class.java).apply {
                     action = ScreenCaptureService.ACTION_START
@@ -114,6 +181,9 @@ class MainActivity : FlutterActivity() {
                     putExtra(ScreenCaptureService.EXTRA_WIDTH, width)
                     putExtra(ScreenCaptureService.EXTRA_HEIGHT, height)
                     putExtra(ScreenCaptureService.EXTRA_DPI, metrics.densityDpi)
+                    putExtra(ScreenCaptureService.EXTRA_FPS, fps)
+                    putExtra(ScreenCaptureService.EXTRA_STREAM_MODE, requestedStreamMode)
+                    putExtra(ScreenCaptureService.EXTRA_GUAC_URL, requestedGuacUrl)
                 }
 
                 try {

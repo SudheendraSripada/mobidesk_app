@@ -174,4 +174,43 @@ class FramingDemuxerTest {
         assertEquals(1, frames.size)
         assertArrayEquals(payload, frames[0].payload)
     }
+
+    @Test
+    fun testTypeDisplayInfoRoundTrip() {
+        assertEquals(5.toByte(), FramingProtocol.TYPE_DISPLAY_INFO)
+
+        val width = 1920
+        val height = 1080
+        val fps = 60
+
+        val payload = FramingProtocol.createDisplayInfoPayload(width, height, fps)
+        assertEquals(12, payload.size)
+
+        val (parsedW, parsedH, parsedFps) = FramingProtocol.parseDisplayInfo(payload)
+        assertEquals(width, parsedW)
+        assertEquals(height, parsedH)
+        assertEquals(fps, parsedFps)
+
+        // Test streaming through FramingDemuxer
+        val frames = mutableListOf<ReceivedFrame>()
+        val demuxer = FramingDemuxer { type, flags, ptsUs, receivedPayload ->
+            frames.add(ReceivedFrame(type, flags, ptsUs, receivedPayload))
+        }
+
+        val out = ByteArrayOutputStream()
+        FramingProtocol.writeDisplayInfo(out, width, height, fps)
+
+        val packet = out.toByteArray()
+        demuxer.feedData(packet, 0, packet.size)
+
+        assertEquals(1, frames.size)
+        assertEquals(FramingProtocol.TYPE_DISPLAY_INFO, frames[0].type)
+        assertEquals(FramingProtocol.FLAG_NONE, frames[0].flags)
+        assertEquals(12, frames[0].payload.size)
+
+        val demuxed = FramingProtocol.parseDisplayInfo(frames[0].payload)
+        assertEquals(1920, demuxed.first)
+        assertEquals(1080, demuxed.second)
+        assertEquals(60, demuxed.third)
+    }
 }

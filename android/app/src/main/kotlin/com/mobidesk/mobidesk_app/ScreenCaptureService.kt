@@ -48,6 +48,11 @@ class ScreenCaptureService : Service() {
         const val EXTRA_WIDTH = "extra_width"
         const val EXTRA_HEIGHT = "extra_height"
         const val EXTRA_DPI = "extra_dpi"
+        const val EXTRA_FPS = "extra_fps"
+        const val EXTRA_STREAM_MODE = "extra_stream_mode"
+        const val STREAM_MODE_MIRROR = "mode_mirror"
+        const val STREAM_MODE_VIRTUAL_DISPLAY = "mode_virtual_display"
+        const val EXTRA_GUAC_URL = "extra_guac_url"
 
         private const val NOTIFICATION_CHANNEL_ID = "mobidesk_screen_capture"
         private const val NOTIFICATION_ID = 1001
@@ -62,6 +67,10 @@ class ScreenCaptureService : Service() {
         @Volatile
         var isServiceRunning: Boolean = false
             private set
+
+        @Volatile
+        var isFallbackActive: Boolean = false
+            private set
     }
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -72,6 +81,8 @@ class ScreenCaptureService : Service() {
     private var inputSurface: Surface? = null
     private var aoaAccessoryManager: AoaAccessoryManager? = null
     private var screenStateReceiver: BroadcastReceiver? = null
+    private var presentation: MobiDeskPresentation? = null
+    private var currentStreamMode: String = STREAM_MODE_MIRROR
 
     @Volatile
     private var cachedCodecConfig: ByteArray? = null
@@ -175,6 +186,12 @@ class ScreenCaptureService : Service() {
             height = if (isPortrait) targetLong else targetShort
         }
 
+        val streamMode = intent.getStringExtra(EXTRA_STREAM_MODE) ?: STREAM_MODE_MIRROR
+        val guacUrl = intent.getStringExtra(EXTRA_GUAC_URL)
+        val frameRate = intent.getIntExtra(EXTRA_FPS, DEFAULT_FRAME_RATE)
+        currentStreamMode = streamMode
+        isFallbackActive = false
+
         // Ensure even dimensions required by H.264 / AVC video codecs
         if (width % 2 != 0) width--
         if (height % 2 != 0) height--
@@ -213,7 +230,7 @@ class ScreenCaptureService : Service() {
                     MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
                 )
                 setInteger(MediaFormat.KEY_BIT_RATE, DEFAULT_BIT_RATE)
-                setInteger(MediaFormat.KEY_FRAME_RATE, DEFAULT_FRAME_RATE)
+                setInteger(MediaFormat.KEY_FRAME_RATE, frameRate)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, DEFAULT_I_FRAME_INTERVAL)
 
                 // Low-latency Constant Bit Rate (CBR)
@@ -273,21 +290,54 @@ class ScreenCaptureService : Service() {
                 return
             }
 
-            // 9. Create VirtualDisplay directing screen frames to MediaCodec input surface
-            virtualDisplay = projection.createVirtualDisplay(
-                "MobiDeskCapture",
-                width,
-                height,
-                dpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                surface,
-                null,
-                null
-            )
+            // 9. Create VirtualDisplay directing display frames to MediaCodec input surface
+            if (streamMode == STREAM_MODE_VIRTUAL_DISPLAY && !guacUrl.isNullOrEmpty()) {
+                try {
+                    val displayManager = getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+                    val flags = DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
+                                DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or
+                                DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY
+                    val vDisplay = displayManager.createVirtualDisplay(
+                        "MobiDeskMonitorDisplay",
+                        width,
+                        height,
+                        dpi,
+                        surface,
+                        flags
+                    )
+                    virtualDisplay = vDisplay
+
+                    Handler(Looper.getMainLooper()).post {
+                        try {
+                            val pres = MobiDeskPresentation(this@ScreenCaptureService, vDisplay.display, guacUrl)
+                            pres.show()
+                            presentation = pres
+                            Log.i(TAG, "MobiDeskPresentation launched on VirtualDisplay at ${width}x${height} for Guacamole session.")
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to instantiate Presentation on VirtualDisplay, activating fallback mirror: ${e.message}", e)
+                            fallbackToMirror(projection, width, height, dpi, surface)
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to create Presentation VirtualDisplay, activating fallback mirror: ${e.message}", e)
+                    fallbackToMirror(projection, width, height, dpi, surface)
+                }
+            } else {
+                virtualDisplay = projection.createVirtualDisplay(
+                    "MobiDeskCapture",
+                    width,
+                    height,
+                    dpi,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    surface,
+                    null,
+                    null
+                )
+            }
 
             isStreaming = true
             isServiceRunning = true
-            Log.i(TAG, "MediaCodec CBR encoder initialized (${width}x${height} @ ${DEFAULT_FRAME_RATE} FPS)")
+            Log.i(TAG, "MediaCodec CBR encoder initialized (${width}x${height} @ ${frameRate} FPS, mode=$streamMode)")
 
             // Force immediate keyframe on startup/connection if accessory is already connected
             if (aoaAccessoryManager?.isConnected == true) {
@@ -309,6 +359,34 @@ class ScreenCaptureService : Service() {
         }
     }
 
+    private fun fallbackToMirror(
+        projection: MediaProjection,
+        width: Int,
+        height: Int,
+        dpi: Int,
+        surface: Surface
+    ) {
+        try {
+            virtualDisplay?.release()
+        } catch (_: Exception) {}
+        try {
+            virtualDisplay = projection.createVirtualDisplay(
+                "MobiDeskCaptureFallback",
+                width,
+                height,
+                dpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                surface,
+                null,
+                null
+            )
+            isFallbackActive = true
+            Log.i(TAG, "Fallback MediaProjection screen mirror successfully activated.")
+        } catch (e: Exception) {
+            Log.e(TAG, "Fallback MediaProjection mirror also failed: ${e.message}", e)
+        }
+    }
+
     private fun registerScreenStateReceiver() {
         if (screenStateReceiver != null) return
         val filter = IntentFilter().apply {
@@ -320,8 +398,12 @@ class ScreenCaptureService : Service() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 when (intent?.action) {
                     Intent.ACTION_SCREEN_OFF -> {
-                        Log.i(TAG, "Device screen turned OFF. Notifying receiver of sleep state...")
-                        aoaAccessoryManager?.sendSleepState(true)
+                        if (currentStreamMode == STREAM_MODE_VIRTUAL_DISPLAY && !isFallbackActive) {
+                            Log.i(TAG, "Phone screen turned OFF. VirtualDisplay monitor streaming remains active.")
+                        } else {
+                            Log.i(TAG, "Device screen turned OFF. Notifying receiver of sleep state...")
+                            aoaAccessoryManager?.sendSleepState(true)
+                        }
                     }
                     Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
                         Log.i(TAG, "Device screen turned ON. Notifying receiver of wake state...")
@@ -571,6 +653,13 @@ class ScreenCaptureService : Service() {
             drainThread?.join(1000)
         } catch (_: InterruptedException) {}
         drainThread = null
+
+        try {
+            presentation?.dismiss()
+        } catch (e: Exception) {
+            Log.w(TAG, "Error dismissing presentation: ${e.message}")
+        }
+        presentation = null
 
         try {
             virtualDisplay?.release()

@@ -1,0 +1,36 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Flutter: Pub get",
+            "type": "shell",
+            "command": "flutter pub get",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Flutter: Run debug",
+            "type": "shell",
+            "command": "flutter run -d linux",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [
+                "$dart"
+            ]
+        },
+        {
+            "label": "Flutter: Test",
+            "type": "shell",
+            "command": "flutter test",
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [
+                "$dart"
+            ]
+        }
+    ]
+}

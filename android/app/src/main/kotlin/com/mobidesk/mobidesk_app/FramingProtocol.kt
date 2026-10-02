@@ -25,6 +25,7 @@ object FramingProtocol {
     const val TYPE_FRAME: Byte = 2
     const val TYPE_HEARTBEAT: Byte = 3
     const val TYPE_SLEEP: Byte = 4
+    const val TYPE_DISPLAY_INFO: Byte = 5
 
     const val FLAG_NONE: Byte = 0x00
     const val FLAG_KEYFRAME: Byte = 0x01
@@ -59,6 +60,40 @@ object FramingProtocol {
             out.write(payload, offset, length)
         }
         out.flush()
+    }
+
+    /**
+     * Creates a 12-byte binary payload containing monitor display dimensions and refresh rate.
+     */
+    fun createDisplayInfoPayload(width: Int, height: Int, fps: Int): ByteArray {
+        val buffer = ByteBuffer.allocate(12).order(ByteOrder.BIG_ENDIAN)
+        buffer.putInt(width)
+        buffer.putInt(height)
+        buffer.putInt(fps)
+        return buffer.array()
+    }
+
+    /**
+     * Parses a 12-byte display info payload into width, height, and fps.
+     */
+    fun parseDisplayInfo(payload: ByteArray): Triple<Int, Int, Int> {
+        if (payload.size < 12) {
+            throw IllegalArgumentException("Payload too short for DisplayInfo: ${payload.size} bytes (required: 12)")
+        }
+        val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
+        val width = buffer.int
+        val height = buffer.int
+        val fps = buffer.int
+        return Triple(width, height, fps)
+    }
+
+    /**
+     * Writes a TYPE_DISPLAY_INFO packet directly to an output stream.
+     */
+    @Synchronized
+    fun writeDisplayInfo(out: OutputStream, width: Int, height: Int, fps: Int) {
+        val payload = createDisplayInfoPayload(width, height, fps)
+        writeFrame(out, TYPE_DISPLAY_INFO, FLAG_NONE, payload, 0, payload.size, 0L)
     }
 }
 

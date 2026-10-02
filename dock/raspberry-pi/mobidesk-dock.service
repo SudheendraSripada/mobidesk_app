@@ -1,0 +1,20 @@
+[Unit]
+Description=MobiDesk Raspberry Pi 4B USB Dock Daemon
+After=network.target systemd-udevd.service
+Wants=systemd-udevd.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/usr/local/bin
+ExecStart=/usr/bin/python3 /usr/local/bin/mobidesk_dock.py
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+# Hardware access limits
+SupplementaryGroups=video plugdev input
+
+[Install]
+WantedBy=multi-user.target

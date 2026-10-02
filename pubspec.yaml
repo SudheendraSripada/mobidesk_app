@@ -35,6 +35,7 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   android_intent_plus: ^6.1.0
+  supabase_flutter: ^2.8.0
 
 dev_dependencies:
   flutter_test:

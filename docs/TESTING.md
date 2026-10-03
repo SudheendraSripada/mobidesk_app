@@ -55,118 +55,140 @@ This setup allows complete end-to-end testing of AOA 2.0 streaming, resolution n
 
 ---
 
-## 2. Raspberry Pi 4B Hardware Dock Testing & Numbered 8-Step Bring-Up Order
+## 2. Numbered Bring-Up Order & Hardware Validation Procedure
 
-This numbered 8-step procedure is the authoritative bring-up protocol for MobiDesk prototype builds (v3+). Follow each step sequentially, confirming the expected logs and screen output before proceeding to the next.
+Follow this exact 8-step bring-up sequence sequentially. For every step, record and send back the indicated log outputs and screen captures.
 
-### Step 1: Pi Dock Environment & Driver Verification
+### Step 1: Server Connectivity & Guacamole Browser Login
 - **Action**:
-  ```bash
-  cd dock/raspberry-pi
-  python3 mobidesk_dock.py --selftest
-  python3 mobidesk_dock.py --diagnose
-  ```
-- **Expected Output / Screen**:
-  - Console prints `[PASS]` for pyusb, DRM HDMI mode detection, and evdev input devices.
-  - `--diagnose` reports detected DRM HDMI modes (e.g. `1920x1080`), input nodes (`/dev/input/event*`), and GStreamer elements (`appsrc`, `h264parse`, `v4l2h264dec` or `avdec_h264`, `kmssink`).
-  - Monitor screen: Standard Pi console or desktop.
-
-### Step 2: HDMI Video Pipeline Verification (Independent of USB)
-- **Action**:
-  ```bash
-  python3 mobidesk_dock.py --test-pattern
-  ```
-- **Expected Output / Screen**:
-  - Console log: `[INFO] Initializing MobiDesk HDMI test pattern generator... Displaying SMPTE test pattern via kmssink`.
-  - Monitor screen: Fullscreen SMPTE color bars (color calibration test pattern). Press `Ctrl+C` to terminate cleanly.
-
-### Step 3: Phone App Pre-Flight System Check (11 Checks)
-- **Action**:
-  - Launch MobiDesk on Android Phone.
-  - Navigate to **Settings > System check** (or **Developer Tools > Run System Check**).
-  - Tap **Run System Check** to trigger all 11 prerequisite checks.
-- **Expected Output / Screen**:
-  - Phone screen: All 11 checks render with green `[PASS]` chips:
-    1. USB AOA Accessory Attached (or informative notice if not yet plugged)
-    2. MediaCodec H.264/AVC Hardware Encoder
-    3. VirtualDisplay Subsystem (1280x720 / 1920x1080)
-    4. Foreground Service (`connectedDevice` / FGS type)
-    5. Low-Latency WifiLock
-    6. Partial WakeLock
-    7. Post Notifications Permission
-    8. Battery Optimization Exemption
-    9. Internal Log Storage (~1 MB Ring Buffer)
-    10. Presentation Display Manager
-    11. Network & Internet Connectivity
-  - Tap **Copy report** to verify clipboard export.
-
-### Step 4: Authentication & Credential Persistence
-- **Action**:
-  - Open **Login Screen**.
-  - Enter credentials and ensure **"Keep me signed in"** is checked.
-  - Tap **Sign In**.
-- **Expected Output / Screen**:
-  - Phone screen: Navigates to Dashboard.
-  - AppLogger log: `[AUTH] Credentials saved to encrypted storage with keepSignedIn=true`.
-  - Close and relaunch app: Automatically bypasses login screen and opens Dashboard.
-
-### Step 5: Physical USB Attachment & AOA Handshake
-- **Action**:
-  - Start dock service on Raspberry Pi:
+  - Test TCP reachability from the local network to Guacamole web, guacd daemon, and Windows RDP:
     ```bash
-    python3 mobidesk_dock.py
+    nc -vz <GUACAMOLE_HOST> 8080
+    nc -vz <GUACAMOLE_HOST> 4822
+    nc -vz <WINDOWS_VM_HOST> 3389
     ```
-  - Connect Phone via USB-C to USB-A cable to Raspberry Pi 4B.
-- **Expected Output / Screen**:
-  - Dock console log:
-    ```text
-    Found USB device xxxx:yyyy. Performing AOA 2.0 handshake...
-    Android device supports AOA version: 2
-    AOA start request sent. Waiting for phone re-enumeration...
-    ```
-  - Phone dialog: *"Open MobiDesk when this USB accessory is connected?"* -> Select always allow / OK.
-  - Phone screen: Auto-launches directly into **Monitor Mode Screen** (or logs in silently if locked).
-  - AppLogger log: `[AOA] USB accessory attached: MobiDesk / MobiDeskDock (AOA 2.0 active)`.
+  - Open a web browser on your computer or phone and navigate to `http://<GUACAMOLE_HOST>:8080/guacamole/#/`.
+  - Log in with the student credentials (e.g., `student@mobidesk.edu` / `MobiDesk2026!`).
+  - Verify the assigned Windows VM desktop launches and responds to mouse/keyboard.
+- **Expected Result**:
+  - All `nc -vz` commands report `succeeded` / `open`.
+  - Guacamole HTML5 client renders the Windows 11 desktop cleanly in the browser.
+- **What to Send Back**:
+  - Terminal output of the three `nc -vz` commands.
+  - Screenshot of the Guacamole browser session showing the logged-in Windows desktop.
 
-### Step 6: Display Resolution Negotiation & Presentation Launch
+### Step 2: App Phone Mode Verification
 - **Action**:
-  - Dock queries DRM EDID and transmits `TYPE_DISPLAY_INFO` (`1920x1080@60`).
-  - Phone receives display info, queries MediaCodec bounds, launches `ScreenCaptureService` in VirtualDisplay mode, and creates `MobiDeskPresentation`.
-- **Expected Output / Screen**:
-  - Dock console log: `Sent TYPE_DISPLAY_INFO (1920x1080@60) to phone`.
-  - Phone AppLogger log: `[SCREEN_CAP] Display info received: 1920x1080@60. Negotiated encoder: 1920x1080 @ 30 FPS`.
-  - Monitor screen: Transitions immediately from blank to branded MobiDesk connecting screen with active loading spinner and status: *"Connecting to Cloud Desktop..."* (Never black or frozen).
-  - Cloud PC desktop renders cleanly onto the external monitor once the WebRTC/Guacamole session establishes.
+  - Launch MobiDesk on your Android phone.
+  - On the Login screen, enter credentials (or tap **Quick Demo Login**). Ensure **"Keep me signed in"** is checked.
+  - From the Dashboard under **Cloud PC**, tap **PHONE** mode.
+- **Expected Result**:
+  - The phone transitions to immersive landscape mode via `PhoneCloudPcActivity`.
+  - The Windows VM desktop displays fullscreen on the phone.
+  - Floating toolbar allows toggling soft keyboard, sending helper keys (Ctrl, Alt, Win, Esc, Tab), right-clicking (via long-press), and disconnecting.
+- **What to Send Back**:
+  - Screenshot of the phone in fullscreen Phone Cloud PC mode showing the floating toolbar and Windows VM desktop.
+  - AppLogger log snippet from **Developer Tools > View Logs** showing `[AUTH]` and `PhoneCloudPcActivity` initialization.
 
-### Step 7: Video Streaming & 5s Periodic Stats Monitoring
+### Step 3: System Check Screen (All Green)
 - **Action**:
-  - Observe real-time statistics on both Phone (Monitor Mode screen) and Pi terminal.
-  - Tap the **"Request Keyframe"** floating action button on the Phone.
-- **Expected Output / Screen**:
-  - Phone Monitor Mode screen: Real-time chips display `fps` (28-30), `kbps` (~3500-4500), `dropped` (0), `keyframes` (incremented on tap).
-  - Phone AppLogger log (every 5 seconds):
-    ```text
-    [5s STREAM STATS] fps=29.8 | kbps=3840 | dropped=0 | keyframes=1 | wakeLock=true | wifiLock=true | fgsType=connectedDevice
-    ```
-  - Pi Dock console log (every 5 seconds):
-    ```text
-    [5s DOCK STATS] decoder=v4l2h264dec (hardware) | incoming_fps=29.8 | kbps=3840.5 | last_keyframe_age=4.2s | input_events_per_sec=0.0 | usb_state=STREAMING
-    ```
-  - Monitor screen: Smooth 30+ FPS low-latency video feed.
+  - In MobiDesk, open **Settings > System check** (or **Developer Tools > Run System Check**).
+  - Tap **Run System Check** to evaluate all 11 diagnostic items.
+  - Once all checks complete, tap **Copy report**.
+- **Expected Result**:
+  - All 11 diagnostic items report green `[PASS]` status:
+    1. Supabase reachable & session valid
+    2. Guacamole URL reachable (HTTP 200/302)
+    3. Guacamole token authentication
+    4. Assigned VM connection ID resolved
+    5. USB accessory subsystem ready
+    6. Dry-run VirtualDisplay creation (1280x720 dummy Surface)
+    7. MediaCodec AVC hardware encoder capabilities
+    8. Foreground service type permission (`connectedDevice` / `specialUse`)
+    9. Battery optimization exemption status
+    10. Low-latency WifiLock acquirable
+    11. `POST_NOTIFICATIONS` permission granted
+- **What to Send Back**:
+  - Screenshot of the System Check screen showing all 11 green `[PASS]` chips.
+  - Pasted clipboard text from the **Copy report** button.
 
-### Step 8: Input Forwarding & Disconnect / Re-Attach Recovery
+### Step 4: Two-Phone Dock Simulator Test
 - **Action**:
-  - Move mouse and type keys on keyboard connected to Raspberry Pi USB ports.
-  - Unplug USB cable from phone, wait 5 seconds, then plug back in.
-- **Expected Output / Screen**:
-  - Mouse movement moves software cursor on monitor screen; keystrokes register in remote desktop.
-  - Pi Dock console log: `input_events_per_sec=14.5`.
-  - **On Cable Unplug**:
-    - Monitor screen: Shows branded connecting overlay with spinner and countdown: *"Connection lost. Retrying in 1s..."*.
-    - Phone screen: Monitor mode displays reconnection banner, starts exponential backoff (1s, 2s, 4s, 8s, 15s).
-    - Pi Dock: Returns to `WAITING` state without crashing or terminating process.
-  - **On Cable Re-Plug**:
-    - AOA handshake re-executes immediately.
-    - Phone automatically triggers silent re-auth, re-initializes `ScreenCaptureService`, and pushes keyframe.
-    - Monitor resumes live desktop rendering within < 2 seconds.
-    - AppLogger log: `[RECONNECT] Stream re-established successfully; presentation state=connected`.
+  - On **Phone B** (Host/OTG): Open **Developer Tools > Receive (Receiver)**. Connect USB OTG adapter.
+  - Connect USB cable from Phone B's OTG adapter to **Phone A**'s USB-C port.
+  - On Phone B: Accept USB accessory permission prompt.
+  - On Phone A: App auto-navigates into Monitor mode, receives Phone B's `TYPE_DISPLAY_INFO`, and begins streaming.
+- **Expected Result**:
+  - Phone B displays Phone A's stream fullscreen with no letterboxing.
+  - Touch input on Phone B forwards as `TYPE_INPUT_MOUSE` to Phone A.
+- **What to Send Back**:
+  - Photo of both phones side-by-side with Phone B rendering Phone A's stream.
+  - AppLogger log from Phone A and logcat output from Phone B (`UsbHostReceiver`).
+
+### Step 5: Pi Self-Test & Test Pattern Generation
+- **Action**:
+  - On the Raspberry Pi 4B (running Raspberry Pi OS Lite 64-bit), connect an HDMI monitor to micro-HDMI port 0.
+  - Run the diagnostic self-test:
+    ```bash
+    python3 dock/raspberry-pi/mobidesk_dock.py --selftest
+    python3 dock/raspberry-pi/mobidesk_dock.py --diagnose
+    ```
+  - Generate the HDMI test pattern to isolate monitor/display output from USB:
+    ```bash
+    python3 dock/raspberry-pi/mobidesk_dock.py --test-pattern
+    ```
+  - Verify SMPTE color bars on the HDMI monitor. Terminate with `Ctrl+C`.
+- **Expected Result**:
+  - `--selftest` reports `[PASS]` for all core dependencies.
+  - `--diagnose` lists connected DRM HDMI modes (e.g. `1920x1080@60`), input devices (`/dev/input/event*`), and GStreamer elements.
+  - `--test-pattern` displays crisp fullscreen SMPTE color bars on the HDMI monitor.
+- **What to Send Back**:
+  - Console text output of `python3 mobidesk_dock.py --selftest` and `--diagnose`.
+  - Photo of the physical HDMI monitor displaying the SMPTE color bar test pattern.
+
+### Step 6: Real Pi Dock + Phone End-to-End Streaming
+- **Action**:
+  - Connect USB keyboard and mouse to Raspberry Pi 4B USB ports.
+  - Start the dock daemon on the Pi:
+    ```bash
+    python3 dock/raspberry-pi/mobidesk_dock.py
+    ```
+  - Connect the Android phone via USB-C to USB-A cable to a Pi USB 3.0 port.
+  - On phone: Accept USB accessory prompt if presented.
+  - App auto-launches into Monitor Mode. Pi sends `TYPE_DISPLAY_INFO` (`1920x1080@60`). Phone negotiates encoder and begins AOA streaming.
+- **Expected Result**:
+  - Physical HDMI monitor immediately displays branded connecting screen with loading spinner: *"MobiDesk - connecting your Cloud PC..."* (never blank or frozen).
+  - External monitor transitions to fullscreen Windows VM desktop once Guacamole session connects.
+  - Phone screen displays Monitor Mode status chips (Dock connected, 1920x1080, ~30 FPS, Bitrate ~4000 kbps, 0 dropped frames).
+  - Status text *"Connected, started streaming"* appears ONLY on the phone, never baked into the HDMI monitor image.
+- **What to Send Back**:
+  - Photo showing physical setup: Phone with status chips, Pi 4B, and HDMI monitor displaying the Windows desktop.
+  - Terminal output of Pi dock showing initial AOA handshake and 5-second periodic stats (`[5s DOCK STATS]`).
+
+### Step 7: Screen-Off Continuous Streaming Test
+- **Action**:
+  - While streaming is active on the HDMI monitor, press the physical **Power button** on the phone to turn off and lock the phone screen.
+  - Observe the HDMI monitor for 60 seconds.
+  - Unlock the phone.
+- **Expected Result**:
+  - The HDMI monitor continues rendering the live Windows Cloud PC session smoothly without freezing, black screen, or disconnection.
+  - WakeLock and low-latency WifiLock prevent CPU throttling or network teardown.
+  - Unlocking the phone returns to the Monitor Mode screen with streaming uninterrupted.
+- **What to Send Back**:
+  - Short video or photo showing the phone screen completely black/off while the HDMI monitor is displaying the live Windows desktop.
+  - Exported log from **Developer Tools > View Logs > Share logs** covering the 60-second screen-off period.
+
+### Step 8: Hardware Input Forwarding & Disconnect/Re-Attach Recovery
+- **Action**:
+  - Move the USB mouse connected to the Pi: verify software cursor moves on the HDMI monitor.
+  - Click and drag, right-click, and scroll the mouse wheel.
+  - Type on the USB keyboard connected to the Pi: verify keystrokes register in Windows Notepad or browser.
+  - Unplug the USB cable from the phone. Wait 5 seconds.
+  - Plug the USB cable back into the phone.
+- **Expected Result**:
+  - Software cursor on the HDMI monitor tracks mouse smoothly; keystrokes register without lag.
+  - On unplug: HDMI monitor transitions to branded reconnecting overlay with countdown (*"Reconnecting to Cloud PC..."*); phone shows reconnecting state.
+  - On re-plug: Phone triggers silent re-authentication with stored credentials, AOA session re-establishes, and live streaming resumes within < 2 seconds.
+- **What to Send Back**:
+  - Video or photo showing cursor movement/typing in the Windows VM via Pi-attached peripherals.
+  - Pi dock terminal log showing `input_events_per_sec`, disconnect handling, and successful re-enumeration.

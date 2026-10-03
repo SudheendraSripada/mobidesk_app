@@ -19,7 +19,13 @@ class AppConfig {
     const envUrl = String.fromEnvironment('SUPABASE_URL');
     const envKey = String.fromEnvironment('SUPABASE_ANON_KEY');
     const envGuac = String.fromEnvironment('GUACAMOLE_BASE_URL');
-    if (envUrl.isNotEmpty) supabaseUrl = envUrl.trim();
+    if (envUrl.isNotEmpty) {
+      String url = envUrl.trim();
+      while (url.endsWith('/')) {
+        url = url.substring(0, url.length - 1);
+      }
+      supabaseUrl = url;
+    }
     if (envKey.isNotEmpty) supabaseAnonKey = envKey.trim();
     if (envGuac.isNotEmpty) {
       String url = envGuac.trim();
@@ -41,7 +47,13 @@ class AppConfig {
     String? newGuacamoleBaseUrl,
     bool? demoMode,
   }) {
-    if (newSupabaseUrl != null) supabaseUrl = newSupabaseUrl.trim();
+    if (newSupabaseUrl != null) {
+      String url = newSupabaseUrl.trim();
+      while (url.endsWith('/')) {
+        url = url.substring(0, url.length - 1);
+      }
+      supabaseUrl = url;
+    }
     if (newSupabaseAnonKey != null) supabaseAnonKey = newSupabaseAnonKey.trim();
     if (newGuacamoleBaseUrl != null) {
       String url = newGuacamoleBaseUrl.trim();

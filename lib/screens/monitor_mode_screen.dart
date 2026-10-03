@@ -224,10 +224,16 @@ class _MonitorModeScreenState extends State<MonitorModeScreen> {
       AppLogger.i('MonitorModeScreen', 'Attempting silent re-authentication with stored credentials...');
       await UsbStreamService.updatePresentationStatus('Reconnecting Cloud PC session...', countdown: 3);
       try {
-        final guacResult = await GuacamoleService.login(
+        var guacResult = await GuacamoleService.login(
           username: creds['username']!,
           password: creds['password']!,
         );
+        if (!guacResult.isSuccess && !creds['username']!.contains('@')) {
+          guacResult = await GuacamoleService.login(
+            username: '${creds['username']!}@mobidesk.edu',
+            password: creds['password']!,
+          );
+        }
         final newToken = guacResult.authToken ?? 'DEMO_TOKEN_2026';
         _currentAuthToken = newToken;
         await AuthStorage.saveCredentials(

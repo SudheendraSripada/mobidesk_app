@@ -88,12 +88,34 @@ class GuacamoleService {
     }
   }
 
+  /// Helper to encode a connection ID, type, and dataSource into a Base64URL ClientIdentifier
+  /// if a deployment specifically requires RFC 4648 unpadded Base64URL ClientIdentifier encoding.
+  static String encodeClientIdentifier({
+    required String connectionId,
+    String type = 'c',
+    String dataSource = 'postgresql',
+  }) {
+    final raw = '$connectionId\x00$type\x00$dataSource';
+    return base64Url.encode(utf8.encode(raw)).replaceAll('=', '');
+  }
+
   /// Builds the HTML5 client URL for a given VM connection ID and token.
+  /// If [encodeIdentifier] is true, encodes raw connectionId into a Base64URL ClientIdentifier.
   static String buildClientUrl({
     required String connectionId,
     required String authToken,
+    bool encodeIdentifier = false,
+    String type = 'c',
+    String dataSource = 'postgresql',
   }) {
     final baseUrl = AppConfig().guacamoleBaseUrl;
-    return '$baseUrl/#/client/${Uri.encodeComponent(connectionId)}?token=${Uri.encodeComponent(authToken)}';
+    final id = encodeIdentifier
+        ? encodeClientIdentifier(
+            connectionId: connectionId,
+            type: type,
+            dataSource: dataSource,
+          )
+        : connectionId;
+    return '$baseUrl/#/client/${Uri.encodeComponent(id)}?token=${Uri.encodeComponent(authToken)}';
   }
 }

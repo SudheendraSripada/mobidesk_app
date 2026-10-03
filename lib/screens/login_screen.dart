@@ -72,23 +72,67 @@ class _LoginScreenState extends State<LoginScreen> {
     final username = _usernameController.text.trim();
     final password = _passwordController.text;
 
+    // Transformation: typed username to Supabase email & Guacamole username
+    final supabaseEmail = username.contains('@') ? username : '$username@mobidesk.edu';
+    final guacUsername = username;
+
     try {
       // 1. Authenticate against Guacamole REST API (/api/tokens)
-      final guacResult = await GuacamoleService.login(
-        username: username,
+      var guacResult = await GuacamoleService.login(
+        username: guacUsername,
         password: password,
       );
+      String effectiveGuacUsername = guacUsername;
+      if (!guacResult.isSuccess && guacUsername != supabaseEmail) {
+        guacResult = await GuacamoleService.login(
+          username: supabaseEmail,
+          password: password,
+        );
+        if (guacResult.isSuccess) {
+          effectiveGuacUsername = supabaseEmail;
+        }
+      }
+
+      final config = AppConfig();
+      if (!config.isDemoMode) {
+        if (!guacResult.isSuccess &&
+            config.guacamoleBaseUrl.isNotEmpty &&
+            !config.guacamoleBaseUrl.contains('10.0.2.2')) {
+          throw Exception(
+            guacResult.errorMessage ?? 'Guacamole authentication failed',
+          );
+        }
+      }
 
       final authToken = guacResult.authToken ?? 'DEMO_TOKEN_2026';
 
-      // 2. Load student profile and VM mapping from Supabase (or mock fallback)
-      final student = await SupabaseService.getStudentProfile();
-      final vms = await SupabaseService.getAssignedVms();
-      final vm = vms.isNotEmpty ? vms.first : VmConnection.mock();
+      // 2. Authenticate against Supabase Auth (/auth/v1/token?grant_type=password)
+      final supaAuth = await SupabaseService.login(
+        email: supabaseEmail,
+        password: password,
+      );
 
-      // 3. Persist credentials in encrypted storage
+      if (!config.isDemoMode && config.isSupabaseConfigured) {
+        if (!supaAuth.isSuccess) {
+          throw Exception(
+            supaAuth.errorMessage ?? 'Supabase authentication failed',
+          );
+        }
+      }
+
+      // 3. Load student profile and VM mapping from Supabase (enforcing authenticated role & one VM per student)
+      final student = await SupabaseService.getStudentProfile(
+        studentId: supaAuth.userId,
+        authToken: supaAuth.accessToken,
+      );
+      final vm = await SupabaseService.getAssignedVm(
+        studentId: supaAuth.userId,
+        authToken: supaAuth.accessToken,
+      ) ?? VmConnection.mock();
+
+      // 4. Persist credentials in encrypted storage
       await AuthStorage.saveCredentials(
-        username: username,
+        username: effectiveGuacUsername,
         password: password,
         authToken: authToken,
         keepSignedIn: _keepMeSignedIn,

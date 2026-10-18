@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../config/app_config.dart';
 
 class SetupScreen extends StatefulWidget {
@@ -18,7 +19,9 @@ class _SetupScreenState extends State<SetupScreen> {
     super.initState();
     final config = AppConfig();
     _supabaseUrlController = TextEditingController(text: config.supabaseUrl);
-    _supabaseKeyController = TextEditingController(text: config.supabaseAnonKey);
+    _supabaseKeyController = TextEditingController(
+      text: config.supabaseAnonKey,
+    );
     _guacUrlController = TextEditingController(text: config.guacamoleBaseUrl);
   }
 
@@ -30,22 +33,37 @@ class _SetupScreenState extends State<SetupScreen> {
     super.dispose();
   }
 
-  void _saveSettings({required bool demoMode}) {
-    AppConfig().update(
+  Future<void> _saveSettings({required bool demoMode}) async {
+    final config = AppConfig();
+    if (!demoMode) {
+      final validationError = AppConfig.validateGuacamoleUrl(
+        _guacUrlController.text,
+      );
+      if (validationError != null) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(validationError)));
+        return;
+      }
+    }
+
+    final saved = await config.update(
       newSupabaseUrl: _supabaseUrlController.text,
       newSupabaseAnonKey: _supabaseKeyController.text,
       newGuacamoleBaseUrl: _guacUrlController.text,
       demoMode: demoMode,
     );
+    if (!mounted) return;
 
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(
-          demoMode
+          !saved
+              ? 'Settings applied for this session, but secure storage could not save them.'
+              : demoMode
               ? 'Demo mode enabled with sample student & VM data.'
               : 'Server configuration saved.',
         ),
-        backgroundColor: Colors.green,
+        backgroundColor: saved ? Colors.green : Colors.orange,
       ),
     );
 

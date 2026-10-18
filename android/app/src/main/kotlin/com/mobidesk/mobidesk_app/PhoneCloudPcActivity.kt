@@ -43,23 +43,26 @@ class PhoneCloudPcActivity : Activity() {
 
     companion object {
         const val EXTRA_SESSION_URL = "extra_session_url"
-        private const val DEFAULT_URL = "http://localhost:8080/guacamole/#/"
     }
 
     private lateinit var rootLayout: FrameLayout
     private lateinit var webView: WebView
     private lateinit var floatingToolbar: View
-    private var sessionUrl: String = DEFAULT_URL
+    private lateinit var sessionUrl: String
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        sessionUrl = intent.getStringExtra(EXTRA_SESSION_URL)?.takeIf { it.isNotBlank() }
+            ?: run {
+                Toast.makeText(this, "Cannot open Phone Mode: session URL is missing.", Toast.LENGTH_LONG).show()
+                finish()
+                return
+            }
 
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         applyFullScreen()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-
-        sessionUrl = intent.getStringExtra(EXTRA_SESSION_URL) ?: DEFAULT_URL
 
         rootLayout = FrameLayout(this).apply {
             layoutParams = ViewGroup.LayoutParams(

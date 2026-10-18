@@ -9,11 +9,11 @@ import 'package:mobidesk_app/services/supabase_service.dart';
 
 void main() {
   group('Auth & Configuration Logic Tests', () {
-    test('AppConfig default state and updates', () {
+    test('AppConfig default state and updates', () async {
       final config = AppConfig();
       expect(config.isDemoMode, isTrue);
 
-      config.update(
+      await config.update(
         newSupabaseUrl: 'https://test-project.supabase.co',
         newSupabaseAnonKey: 'sample-anon-key-12345',
         newGuacamoleBaseUrl: 'http://192.168.1.50:8080/guacamole/',
@@ -58,8 +58,10 @@ void main() {
       expect(parsedVm.hostname, mockVm.hostname);
     });
 
-    test('GuacamoleService client URL building and escaping', () {
-      AppConfig().update(newGuacamoleBaseUrl: 'http://10.0.2.2:8080/guacamole');
+    test('GuacamoleService client URL building and escaping', () async {
+      await AppConfig().update(
+        newGuacamoleBaseUrl: 'http://10.0.2.2:8080/guacamole',
+      );
 
       final url = GuacamoleService.buildClientUrl(
         connectionId: 'lab-vm-1',
@@ -73,7 +75,7 @@ void main() {
     });
 
     test('GuacamoleService demo login fallback', () async {
-      AppConfig().update(demoMode: true);
+      await AppConfig().update(demoMode: true);
 
       final result = await GuacamoleService.login(
         username: 'student@mobidesk.edu',
@@ -110,51 +112,61 @@ void main() {
       expect(access.toJson(), equals(json));
     });
 
-    test('SupabaseService demo login and authenticated role profile/VM retrieval', () async {
-      AppConfig().update(demoMode: true);
+    test(
+      'SupabaseService demo login and authenticated role profile/VM retrieval',
+      () async {
+        await AppConfig().update(demoMode: true);
 
-      final loginRes = await SupabaseService.login(
-        email: 'student@mobidesk.edu',
-        password: 'Password123!',
-      );
-      expect(loginRes.isSuccess, isTrue);
-      expect(loginRes.accessToken, isNotNull);
-      expect(loginRes.userId, isNotNull);
+        final loginRes = await SupabaseService.login(
+          email: 'student@mobidesk.edu',
+          password: 'Password123!',
+        );
+        expect(loginRes.isSuccess, isTrue);
+        expect(loginRes.accessToken, isNotNull);
+        expect(loginRes.userId, isNotNull);
 
-      final student = await SupabaseService.getStudentProfile(
-        studentId: loginRes.userId,
-        authToken: loginRes.accessToken,
-      );
-      expect(student.name, 'Alex Mercer');
-      expect(student.rollNo, 'CS-2024-042');
-      expect(student.college, contains('Engineering'));
+        final student = await SupabaseService.getStudentProfile(
+          studentId: loginRes.userId,
+          authToken: loginRes.accessToken,
+        );
+        expect(student.name, 'Alex Mercer');
+        expect(student.rollNo, 'CS-2024-042');
+        expect(student.college, contains('Engineering'));
 
-      final vm = await SupabaseService.getAssignedVm(
-        studentId: loginRes.userId,
-        authToken: loginRes.accessToken,
-      );
-      expect(vm, isNotNull);
-      expect(vm!.guacConnectionId, '1');
-      expect(vm.hostname, '10.0.1.101');
+        final vm = await SupabaseService.getAssignedVm(
+          studentId: loginRes.userId,
+          authToken: loginRes.accessToken,
+        );
+        expect(vm, isNotNull);
+        expect(vm!.guacConnectionId, '1');
+        expect(vm.hostname, '10.0.1.101');
 
-      final vms = await SupabaseService.getAssignedVms(
-        studentId: loginRes.userId,
-        authToken: loginRes.accessToken,
-      );
-      expect(vms.length, 1); // Enforcing one VM per student
-    });
+        final vms = await SupabaseService.getAssignedVms(
+          studentId: loginRes.userId,
+          authToken: loginRes.accessToken,
+        );
+        expect(vms.length, 1); // Enforcing one VM per student
+      },
+    );
 
-    test('Username transformation to Supabase email and Guacamole username', () {
-      // With domain
-      const emailInput = 'student@mobidesk.edu';
-      final supaEmail1 = emailInput.contains('@') ? emailInput : '$emailInput@mobidesk.edu';
-      expect(supaEmail1, 'student@mobidesk.edu');
+    test(
+      'Username transformation to Supabase email and Guacamole username',
+      () {
+        // With domain
+        const emailInput = 'student@mobidesk.edu';
+        final supaEmail1 = emailInput.contains('@')
+            ? emailInput
+            : '$emailInput@mobidesk.edu';
+        expect(supaEmail1, 'student@mobidesk.edu');
 
-      // Without domain
-      const rollInput = 'CS-2024-042';
-      final supaEmail2 = rollInput.contains('@') ? rollInput : '$rollInput@mobidesk.edu';
-      expect(supaEmail2, 'CS-2024-042@mobidesk.edu');
-    });
+        // Without domain
+        const rollInput = 'CS-2024-042';
+        final supaEmail2 = rollInput.contains('@')
+            ? rollInput
+            : '$rollInput@mobidesk.edu';
+        expect(supaEmail2, 'CS-2024-042@mobidesk.edu');
+      },
+    );
 
     test('GuacamoleService encodeClientIdentifier Base64URL structure', () {
       final encoded = GuacamoleService.encodeClientIdentifier(
@@ -175,13 +187,13 @@ void main() {
       expect(urlWithEncoded, contains(encoded));
     });
 
-    test('AppConfig strips trailing slash from supabaseUrl', () {
-      AppConfig().update(newSupabaseUrl: 'https://test.supabase.co///');
+    test('AppConfig strips trailing slash from supabaseUrl', () async {
+      await AppConfig().update(newSupabaseUrl: 'https://test.supabase.co///');
       expect(AppConfig().supabaseUrl, 'https://test.supabase.co');
     });
 
     test('SupabaseService returns null and empty list when unassigned outside demo mode', () async {
-      AppConfig().update(
+      await AppConfig().update(
         demoMode: false,
         newSupabaseUrl: 'http://127.0.0.1:54321',
         newSupabaseAnonKey: 'test_anon_key',
@@ -200,7 +212,35 @@ void main() {
       expect(vms, isEmpty);
 
       // Reset to demo mode for subsequent tests
-      AppConfig().update(demoMode: true);
+      await AppConfig().update(demoMode: true);
+    });
+
+    test(
+      'AppConfig normalizes URLs and accepts local HTTP gateway addresses',
+      () {
+        expect(
+          AppConfig.normalizeUrl('  http://192.168.1.20:8080/guacamole///  '),
+          'http://192.168.1.20:8080/guacamole',
+        );
+        expect(
+          AppConfig.validateGuacamoleUrl('http://192.168.1.20:8080/guacamole/'),
+          isNull,
+        );
+        expect(
+          AppConfig.validateGuacamoleUrl('https://localhost:8443/guac'),
+          isNull,
+        );
+      },
+    );
+
+    test('AppConfig rejects missing or invalid gateway URLs', () {
+      expect(AppConfig.validateGuacamoleUrl('  '), isNotNull);
+      expect(AppConfig.validateGuacamoleUrl('/guacamole'), isNotNull);
+      expect(
+        AppConfig.validateGuacamoleUrl('ftp://example.com/guac'),
+        isNotNull,
+      );
+      expect(AppConfig.validateGuacamoleUrl('http:///guac'), isNotNull);
     });
   });
 }

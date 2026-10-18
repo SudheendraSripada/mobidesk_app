@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+
 import '../config/app_config.dart';
 import 'developer_tools_screen.dart';
 import 'system_check_screen.dart';
@@ -28,15 +29,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.dispose();
   }
 
-  void _save() {
-    AppConfig().update(
+  Future<void> _save() async {
+    if (!_demoMode) {
+      final validationError = AppConfig.validateGuacamoleUrl(
+        _guacController.text,
+      );
+      if (validationError != null) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(validationError)));
+        return;
+      }
+    }
+
+    final saved = await AppConfig().update(
       newGuacamoleBaseUrl: _guacController.text,
       demoMode: _demoMode,
     );
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Settings saved successfully.'),
-        backgroundColor: Colors.green,
+      SnackBar(
+        content: Text(
+          saved ? 'Settings saved successfully.' : 'Settings applied for this session, but secure storage could not save them.',
+        ),
+        backgroundColor: saved ? Colors.green : Colors.orange,
       ),
     );
     Navigator.of(context).pop();
@@ -48,10 +63,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final colorScheme = theme.colorScheme;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Settings'),
-        centerTitle: true,
-      ),
+      appBar: AppBar(title: const Text('Settings'), centerTitle: true),
       body: Center(
         child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
@@ -112,7 +124,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         SwitchListTile(
                           contentPadding: EdgeInsets.zero,
                           title: const Text('Offline Demo Mode'),
-                          subtitle: const Text('Use mock student profile and pre-configured Cloud VM'),
+                          subtitle: const Text(
+                            'Use mock student profile and pre-configured Cloud VM',
+                          ),
                           value: _demoMode,
                           onChanged: (val) {
                             setState(() => _demoMode = val);
@@ -131,7 +145,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   leading: const Icon(Icons.fact_check_outlined),
                   title: const Text('System Check'),
-                  subtitle: const Text('Validate USB, hardware encoder, FGS, and runtime prerequisites'),
+                  subtitle: const Text(
+                    'Validate USB, hardware encoder, FGS, and runtime prerequisites',
+                  ),
                   trailing: const Icon(Icons.chevron_right_rounded),
                   onTap: () {
                     Navigator.of(context).push(
@@ -150,7 +166,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   leading: const Icon(Icons.developer_mode_rounded),
                   title: const Text('Developer Hardware Tools'),
-                  subtitle: const Text('Direct USB AOA Sender & Receiver diagnostic views'),
+                  subtitle: const Text(
+                    'Direct USB AOA Sender & Receiver diagnostic views',
+                  ),
                   trailing: const Icon(Icons.chevron_right_rounded),
                   onTap: () {
                     Navigator.of(context).push(

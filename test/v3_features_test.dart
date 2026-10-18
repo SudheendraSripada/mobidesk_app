@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/test/test_flutter_secure_storage_platform.dart';
 import 'package:flutter_secure_storage_platform_interface/flutter_secure_storage_platform_interface.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mobidesk_app/config/app_config.dart';
 import 'package:mobidesk_app/screens/log_viewer_screen.dart';
 import 'package:mobidesk_app/screens/login_screen.dart';
 import 'package:mobidesk_app/screens/system_check_screen.dart';
@@ -11,7 +12,9 @@ import 'package:mobidesk_app/services/usb_stream_service.dart';
 
 void main() {
   setUp(() {
-    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform({});
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+      {},
+    );
 
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(const MethodChannel('com.mobidesk/stream'), (
@@ -43,22 +46,54 @@ void main() {
               methodCall.method == 'updatePresentationSessionUrl' ||
               methodCall.method == 'clearPendingDockAttach') {
             return true;
+          } else if (methodCall.method == 'startPhoneCloudPc') {
+            return true;
           } else if (methodCall.method == 'hasPendingDockAttach' ||
               methodCall.method == 'checkAutoLaunchMonitor') {
             return false;
           } else if (methodCall.method == 'runAllSystemChecks') {
             return {
               'usbAccessory': {'pass': true, 'detail': 'MobiDeskDock attached'},
-              'avcEncoder': {'pass': true, 'detail': 'c2.android.avc.encoder (720p: true)'},
-              'virtualDisplay': {'pass': true, 'detail': 'Presentation VirtualDisplay dry run passed'},
-              'foregroundService': {'pass': true, 'detail': 'FGS: true, CONNECTED_DEVICE: true'},
-              'wifiLock': {'pass': true, 'detail': 'Low-latency WifiLock acquired and released'},
-              'wakeLock': {'pass': true, 'detail': 'Partial WakeLock acquired and released'},
-              'notifications': {'pass': true, 'detail': 'POST_NOTIFICATIONS granted'},
-              'batteryOptimization': {'pass': true, 'detail': 'Unrestricted execution active'},
-              'storage': {'pass': true, 'detail': 'App filesDir writable (1024 MB free)'},
-              'presentationDisplay': {'pass': true, 'detail': 'DisplayManager active'},
-              'networkConnectivity': {'pass': true, 'detail': 'Connected (validated: true)'},
+              'avcEncoder': {
+                'pass': true,
+                'detail': 'c2.android.avc.encoder (720p: true)',
+              },
+              'virtualDisplay': {
+                'pass': true,
+                'detail': 'Presentation VirtualDisplay dry run passed',
+              },
+              'foregroundService': {
+                'pass': true,
+                'detail': 'FGS: true, CONNECTED_DEVICE: true',
+              },
+              'wifiLock': {
+                'pass': true,
+                'detail': 'Low-latency WifiLock acquired and released',
+              },
+              'wakeLock': {
+                'pass': true,
+                'detail': 'Partial WakeLock acquired and released',
+              },
+              'notifications': {
+                'pass': true,
+                'detail': 'POST_NOTIFICATIONS granted',
+              },
+              'batteryOptimization': {
+                'pass': true,
+                'detail': 'Unrestricted execution active',
+              },
+              'storage': {
+                'pass': true,
+                'detail': 'App filesDir writable (1024 MB free)',
+              },
+              'presentationDisplay': {
+                'pass': true,
+                'detail': 'DisplayManager active',
+              },
+              'networkConnectivity': {
+                'pass': true,
+                'detail': 'Connected (validated: true)',
+              },
             };
           } else if (methodCall.method == 'runSystemCheck') {
             return {'pass': true, 'detail': 'Single check passed'};
@@ -98,53 +133,114 @@ void main() {
     expect(stats['isStreaming'], isTrue);
   });
 
-  testWidgets('SystemCheckScreen renders all 11 prerequisite checks and copies report', (
-    WidgetTester tester,
-  ) async {
-    tester.view.physicalSize = const Size(1080, 2400);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(tester.view.resetPhysicalSize);
-    addTearDown(tester.view.resetDevicePixelRatio);
-
-    await tester.pumpWidget(
-      const MaterialApp(
-        home: SystemCheckScreen(),
-      ),
+  test('AppConfig securely persists and restores server settings', () async {
+    final config = AppConfig();
+    await config.update(
+      newSupabaseUrl: ' https://project.supabase.co/// ',
+      newSupabaseAnonKey: ' anon-key ',
+      newGuacamoleBaseUrl: ' http://192.168.1.10:8080/guacamole/// ',
+      demoMode: false,
     );
-    await tester.pumpAndSettle();
 
-    expect(find.text('System Check'), findsOneWidget);
-    expect(find.text('Hardware & Service Prerequisites'), findsOneWidget);
-    expect(find.text('11 of 11 checks passed'), findsOneWidget);
+    config.supabaseUrl = '';
+    config.supabaseAnonKey = '';
+    config.guacamoleBaseUrl = '';
+    config.isDemoMode = true;
+    await config.load();
 
-    // Verify all 11 checks are rendered
-    expect(find.text('USB AOA Accessory Attached'), findsOneWidget);
-    expect(find.text('MediaCodec H.264/AVC Hardware Encoder'), findsOneWidget);
-    expect(find.text('VirtualDisplay Subsystem (1280x720)'), findsOneWidget);
-    expect(find.text('Foreground Service (connectedDevice / FGS)'), findsOneWidget);
-    expect(find.text('Low-Latency WifiLock'), findsOneWidget);
-    expect(find.text('Partial WakeLock'), findsOneWidget);
-    expect(find.text('Post Notifications Permission'), findsOneWidget);
-    expect(find.text('Battery Optimization Exemption'), findsOneWidget);
-    expect(find.text('Internal Log Storage (~1 MB Ring Buffer)'), findsOneWidget);
-    expect(find.text('Presentation Display Manager'), findsOneWidget);
-    expect(find.text('Network & Internet Connectivity'), findsOneWidget);
+    expect(config.supabaseUrl, 'https://project.supabase.co');
+    expect(config.supabaseAnonKey, 'anon-key');
+    expect(config.guacamoleBaseUrl, 'http://192.168.1.10:8080/guacamole');
+    expect(config.isDemoMode, isFalse);
 
-    // Verify Copy report button
-    expect(find.text('Copy report'), findsOneWidget);
-    await tester.tap(find.text('Copy report'));
-    await tester.pump();
-    expect(find.textContaining('Diagnostic report copied to clipboard'), findsOneWidget);
+    await config.update(demoMode: true);
   });
+
+  test('UsbStreamService reports a rejected Phone Mode launch', () async {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(const MethodChannel('com.mobidesk/stream'), (
+          MethodCall methodCall,
+        ) async {
+          if (methodCall.method == 'startPhoneCloudPc') return false;
+          return null;
+        });
+
+    expect(
+      await UsbStreamService.startPhoneCloudPc('http://localhost/session'),
+      isFalse,
+    );
+  });
+
+  test(
+    'UsbStreamService does not send a blank Phone Mode URL to native code',
+    () async {
+      var launchCalls = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            const MethodChannel('com.mobidesk/stream'),
+            (MethodCall methodCall) async {
+              if (methodCall.method == 'startPhoneCloudPc') launchCalls++;
+              return true;
+            },
+          );
+
+      expect(await UsbStreamService.startPhoneCloudPc('  '), isFalse);
+      expect(launchCalls, 0);
+    },
+  );
+
+  testWidgets(
+    'SystemCheckScreen renders all 11 prerequisite checks and copies report',
+    (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(1080, 2400);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      await tester.pumpWidget(const MaterialApp(home: SystemCheckScreen()));
+      await tester.pumpAndSettle();
+
+      expect(find.text('System Check'), findsOneWidget);
+      expect(find.text('Hardware & Service Prerequisites'), findsOneWidget);
+      expect(find.text('11 of 11 checks passed'), findsOneWidget);
+
+      // Verify all 11 checks are rendered
+      expect(find.text('USB AOA Accessory Attached'), findsOneWidget);
+      expect(
+        find.text('MediaCodec H.264/AVC Hardware Encoder'),
+        findsOneWidget,
+      );
+      expect(find.text('VirtualDisplay Subsystem (1280x720)'), findsOneWidget);
+      expect(
+        find.text('Foreground Service (connectedDevice / FGS)'),
+        findsOneWidget,
+      );
+      expect(find.text('Low-Latency WifiLock'), findsOneWidget);
+      expect(find.text('Partial WakeLock'), findsOneWidget);
+      expect(find.text('Post Notifications Permission'), findsOneWidget);
+      expect(find.text('Battery Optimization Exemption'), findsOneWidget);
+      expect(
+        find.text('Internal Log Storage (~1 MB Ring Buffer)'),
+        findsOneWidget,
+      );
+      expect(find.text('Presentation Display Manager'), findsOneWidget);
+      expect(find.text('Network & Internet Connectivity'), findsOneWidget);
+
+      // Verify Copy report button
+      expect(find.text('Copy report'), findsOneWidget);
+      await tester.tap(find.text('Copy report'));
+      await tester.pump();
+      expect(
+        find.textContaining('Diagnostic report copied to clipboard'),
+        findsOneWidget,
+      );
+    },
+  );
 
   testWidgets('LogViewerScreen renders logs and filters entries', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(
-      const MaterialApp(
-        home: LogViewerScreen(),
-      ),
-    );
+    await tester.pumpWidget(const MaterialApp(home: LogViewerScreen()));
     await tester.pumpAndSettle();
 
     expect(find.text('Diagnostic Logs'), findsOneWidget);
@@ -164,11 +260,7 @@ void main() {
   testWidgets('LoginScreen displays Keep me signed in and responds to toggle', (
     WidgetTester tester,
   ) async {
-    await tester.pumpWidget(
-      const MaterialApp(
-        home: LoginScreen(),
-      ),
-    );
+    await tester.pumpWidget(const MaterialApp(home: LoginScreen()));
     await tester.pumpAndSettle();
 
     expect(find.text('Keep me signed in'), findsOneWidget);

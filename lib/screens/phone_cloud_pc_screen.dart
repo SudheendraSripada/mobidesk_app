@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../config/app_config.dart';
 import '../models/vm_connection.dart';
 import '../services/guacamole_service.dart';
 import '../services/usb_stream_service.dart';
@@ -34,16 +35,49 @@ class _PhoneCloudPcScreenState extends State<PhoneCloudPcScreen> {
       authToken: widget.authToken,
     );
 
-    // Launch native immersive fullscreen Cloud PC activity on Android
-    UsbStreamService.startPhoneCloudPc(_sessionUrl);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _launchNativeCloudPc(showLaunchingMessage: false);
+    });
   }
 
-  void _launchNativeCloudPc() {
-    UsbStreamService.startPhoneCloudPc(_sessionUrl);
+  bool get _hasAuthToken => widget.authToken.trim().isNotEmpty;
+
+  bool get _hasValidSessionUrl {
+    return _sessionUrl.trim().isNotEmpty &&
+        AppConfig.validateGuacamoleUrl(AppConfig().guacamoleBaseUrl) == null;
+  }
+
+  Future<void> _launchNativeCloudPc({bool showLaunchingMessage = true}) async {
+    if (!_hasAuthToken) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Phone Mode needs a sign-in session. Please sign in again.',
+          ),
+        ),
+      );
+      return;
+    }
+    if (!_hasValidSessionUrl) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Phone Mode cannot connect because the session URL is missing or invalid. Check the Guacamole server configuration and sign in again.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final started = await UsbStreamService.startPhoneCloudPc(_sessionUrl);
+    if (!mounted) return;
+    if (started && !showLaunchingMessage) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('Launching fullscreen Cloud PC session...'),
-        duration: Duration(milliseconds: 1000),
+      SnackBar(
+        content: Text(
+          started ? 'Launching fullscreen Cloud PC session...' : 'Phone Mode could not be opened. Check the app installation and try again.',
+        ),
+        duration: const Duration(milliseconds: 1800),
       ),
     );
   }
@@ -82,7 +116,9 @@ class _PhoneCloudPcScreenState extends State<PhoneCloudPcScreen> {
               elevation: 4,
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(20),
-                side: BorderSide(color: colorScheme.primary.withValues(alpha: 0.4)),
+                side: BorderSide(
+                  color: colorScheme.primary.withValues(alpha: 0.4),
+                ),
               ),
               child: Padding(
                 padding: const EdgeInsets.all(24),
@@ -113,24 +149,29 @@ class _PhoneCloudPcScreenState extends State<PhoneCloudPcScreen> {
                     const SizedBox(height: 6),
                     Text(
                       'Host: ${widget.vm.hostname} (RDP :3389 via Guacamole)',
-                      style: const TextStyle(color: Colors.white70, fontSize: 13),
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 13,
+                      ),
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 16),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 8,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.black45,
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Text(
-                        'Session: $_sessionUrl',
+                        'Gateway: ${Uri.tryParse(AppConfig().guacamoleBaseUrl)?.host ?? 'Unavailable'}',
                         style: const TextStyle(
                           color: Colors.white60,
                           fontSize: 11,
-                          fontFamily: 'monospace',
                         ),
-                        maxLines: 2,
+                        maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         textAlign: TextAlign.center,
                       ),
@@ -143,7 +184,7 @@ class _PhoneCloudPcScreenState extends State<PhoneCloudPcScreen> {
                       ),
                       icon: const Icon(Icons.open_in_new_rounded),
                       label: const Text('Open Fullscreen Cloud PC'),
-                      onPressed: _launchNativeCloudPc,
+                      onPressed: () => _launchNativeCloudPc(),
                     ),
                     const SizedBox(height: 12),
                     OutlinedButton.icon(

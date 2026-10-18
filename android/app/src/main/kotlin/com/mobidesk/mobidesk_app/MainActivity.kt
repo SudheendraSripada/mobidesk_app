@@ -124,13 +124,15 @@ class MainActivity : FlutterActivity() {
                 }
                 "startPhoneCloudPc" -> {
                     val sessionUrl = call.argument<String>("sessionUrl")
-                    val intent = Intent(this, PhoneCloudPcActivity::class.java).apply {
-                        if (!sessionUrl.isNullOrEmpty()) {
+                    if (sessionUrl.isNullOrBlank()) {
+                        result.success(false)
+                    } else {
+                        val intent = Intent(this, PhoneCloudPcActivity::class.java).apply {
                             putExtra(PhoneCloudPcActivity.EXTRA_SESSION_URL, sessionUrl)
                         }
+                        startActivity(intent)
+                        result.success(true)
                     }
-                    startActivity(intent)
-                    result.success(true)
                 }
                 "stopStream", "stop" -> {
                     val stopIntent = Intent(this, ScreenCaptureService::class.java).apply {

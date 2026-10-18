@@ -8,16 +8,23 @@ import 'package:mobidesk_app/screens/developer_tools_screen.dart';
 
 void main() {
   var mockStreaming = false;
+  var phoneLaunchCalls = 0;
+  var phoneLaunchSucceeds = true;
 
   setUp(() {
     mockStreaming = false;
-    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform({});
+    phoneLaunchCalls = 0;
+    phoneLaunchSucceeds = true;
+    FlutterSecureStoragePlatform.instance = TestFlutterSecureStoragePlatform(
+      {},
+    );
 
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(const MethodChannel('com.mobidesk/stream'), (
           MethodCall methodCall,
         ) async {
-          if (methodCall.method == 'startStream' || methodCall.method == 'startMonitorStream') {
+          if (methodCall.method == 'startStream' ||
+              methodCall.method == 'startMonitorStream') {
             mockStreaming = true;
             return true;
           } else if (methodCall.method == 'stopStream' ||
@@ -45,7 +52,8 @@ void main() {
           } else if (methodCall.method == 'startReceiver') {
             return true;
           } else if (methodCall.method == 'startPhoneCloudPc') {
-            return true;
+            phoneLaunchCalls++;
+            return phoneLaunchSucceeds;
           } else if (methodCall.method == 'getStreamStats') {
             return {
               'fps': 30.0,
@@ -130,58 +138,85 @@ void main() {
     expect(find.text('Academics Overview'), findsOneWidget);
   });
 
-  testWidgets('Tapping Phone Mode opens PhoneCloudPcScreen and delegates to fullscreen activity', (
+  testWidgets(
+    'Tapping Phone Mode opens PhoneCloudPcScreen and delegates to fullscreen activity',
+    (WidgetTester tester) async {
+      await tester.pumpWidget(const MyApp());
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Quick Demo Login'));
+      await tester.pumpAndSettle();
+
+      // Tap Phone Mode
+      await tester.tap(find.text('Phone Mode'));
+      await tester.pumpAndSettle();
+
+      // Verify Phone Mode Screen is displayed with connection info and actions
+      expect(find.textContaining('Windows 11'), findsWidgets);
+      expect(find.text('Open Fullscreen Cloud PC'), findsOneWidget);
+      expect(find.text('Back to Dashboard'), findsOneWidget);
+      expect(find.textContaining('Gateway:'), findsOneWidget);
+      expect(find.textContaining('Session:'), findsNothing);
+      expect(find.textContaining('token='), findsNothing);
+
+      // Test clicking Open Fullscreen Cloud PC
+      final previousPhoneLaunchCalls = phoneLaunchCalls;
+      await tester.tap(find.text('Open Fullscreen Cloud PC'));
+      await tester.pumpAndSettle();
+      expect(phoneLaunchCalls, previousPhoneLaunchCalls + 1);
+
+      // Return to dashboard via Back to Dashboard button
+      await tester.tap(find.text('Back to Dashboard'));
+      await tester.pumpAndSettle();
+      expect(find.text('Assigned Cloud PC'), findsOneWidget);
+    },
+  );
+
+  testWidgets('Phone Mode reports native launch failures', (
     WidgetTester tester,
   ) async {
+    phoneLaunchSucceeds = false;
     await tester.pumpWidget(const MyApp());
     await tester.pumpAndSettle();
 
     await tester.tap(find.text('Quick Demo Login'));
     await tester.pumpAndSettle();
-
-    // Tap Phone Mode
     await tester.tap(find.text('Phone Mode'));
     await tester.pumpAndSettle();
-
-    // Verify Phone Mode Screen is displayed with connection info and actions
-    expect(find.textContaining('Windows 11'), findsWidgets);
-    expect(find.text('Open Fullscreen Cloud PC'), findsOneWidget);
-    expect(find.text('Back to Dashboard'), findsOneWidget);
-    expect(find.textContaining('Session:'), findsOneWidget);
-
-    // Test clicking Open Fullscreen Cloud PC
     await tester.tap(find.text('Open Fullscreen Cloud PC'));
-    await tester.pumpAndSettle();
-    expect(find.text('Launching fullscreen Cloud PC session...'), findsOneWidget);
+    await tester.pump();
 
-    // Return to dashboard via Back to Dashboard button
-    await tester.tap(find.text('Back to Dashboard'));
-    await tester.pumpAndSettle();
-    expect(find.text('Assigned Cloud PC'), findsOneWidget);
+    expect(
+      find.text(
+        'Phone Mode could not be opened. Check the app installation and try again.',
+      ),
+      findsOneWidget,
+    );
   });
 
-  testWidgets('Dashboard renders cleanly on compact 360x640 phone screen without overflow', (
-    WidgetTester tester,
-  ) async {
-    tester.view.physicalSize = const Size(360, 640);
-    tester.view.devicePixelRatio = 1.0;
-    addTearDown(() {
-      tester.view.resetPhysicalSize();
-      tester.view.resetDevicePixelRatio();
-    });
+  testWidgets(
+    'Dashboard renders cleanly on compact 360x640 phone screen without overflow',
+    (WidgetTester tester) async {
+      tester.view.physicalSize = const Size(360, 640);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(() {
+        tester.view.resetPhysicalSize();
+        tester.view.resetDevicePixelRatio();
+      });
 
-    await tester.pumpWidget(const MyApp());
-    await tester.pumpAndSettle();
+      await tester.pumpWidget(const MyApp());
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Quick Demo Login'));
-    await tester.pumpAndSettle();
+      await tester.tap(find.text('Quick Demo Login'));
+      await tester.pumpAndSettle();
 
-    expect(find.textContaining('Alex Mercer'), findsWidgets);
-    expect(find.text('Assigned Cloud PC'), findsOneWidget);
-    expect(find.text('Phone Mode'), findsOneWidget);
-    expect(find.text('Monitor Mode'), findsOneWidget);
-    expect(find.text('Attendance'), findsOneWidget);
-  });
+      expect(find.textContaining('Alex Mercer'), findsWidgets);
+      expect(find.text('Assigned Cloud PC'), findsOneWidget);
+      expect(find.text('Phone Mode'), findsOneWidget);
+      expect(find.text('Monitor Mode'), findsOneWidget);
+      expect(find.text('Attendance'), findsOneWidget);
+    },
+  );
 
   testWidgets('Dashboard renders cleanly on standard 412x915 phone screen', (
     WidgetTester tester,
@@ -206,47 +241,54 @@ void main() {
     expect(find.text('Attendance'), findsOneWidget);
   });
 
-  testWidgets('Tapping Monitor Mode guides through dock detection and streaming', (
-    WidgetTester tester,
-  ) async {
-    await tester.pumpWidget(const MyApp());
-    await tester.pumpAndSettle();
+  testWidgets(
+    'Tapping Monitor Mode guides through dock detection and streaming',
+    (WidgetTester tester) async {
+      await tester.pumpWidget(const MyApp());
+      await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Quick Demo Login'));
-    await tester.pumpAndSettle();
+      await tester.tap(find.text('Quick Demo Login'));
+      await tester.pumpAndSettle();
 
-    // Tap Monitor Mode
-    await tester.tap(find.text('Monitor Mode'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 600));
+      // Tap Monitor Mode
+      await tester.tap(find.text('Monitor Mode'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 600));
 
-    // Verify Connect Dock screen
-    expect(find.text('Connect MobiDesk Dock'), findsOneWidget);
-    expect(find.text('Simulate Dock Detected (Demo)'), findsOneWidget);
+      // Verify Connect Dock screen
+      expect(find.text('Connect MobiDesk Dock'), findsOneWidget);
+      expect(find.text('Simulate Dock Detected (Demo)'), findsOneWidget);
 
-    // Trigger simulated dock detection
-    await tester.tap(find.text('Simulate Dock Detected (Demo)'));
-    await tester.pump();
+      // Trigger simulated dock detection
+      await tester.tap(find.text('Simulate Dock Detected (Demo)'));
+      await tester.pump();
 
-    // Verify resolution reading state
-    expect(find.text('Dock Detected'), findsOneWidget);
-    expect(find.text('Reading monitor resolution from HDMI EDID...'), findsOneWidget);
+      // Verify resolution reading state
+      expect(find.text('Dock Detected'), findsOneWidget);
+      expect(
+        find.text('Reading monitor resolution from HDMI EDID...'),
+        findsOneWidget,
+      );
 
-    // Complete simulated delay and start stream
-    await tester.pump(const Duration(milliseconds: 1500));
-    await tester.pump(const Duration(milliseconds: 500));
+      // Complete simulated delay and start stream
+      await tester.pump(const Duration(milliseconds: 1500));
+      await tester.pump(const Duration(milliseconds: 500));
 
-    // Verify streaming active state with exact required text
-    expect(find.text('Connected, started streaming'), findsOneWidget);
-    expect(find.text('Resolution: 1920x1080 @ 60 FPS (Native HDMI)'), findsOneWidget);
-    expect(find.text('Stop Streaming / Disconnect'), findsOneWidget);
+      // Verify streaming active state with exact required text
+      expect(find.text('Connected, started streaming'), findsOneWidget);
+      expect(
+        find.text('Resolution: 1920x1080 @ 60 FPS (Native HDMI)'),
+        findsOneWidget,
+      );
+      expect(find.text('Stop Streaming / Disconnect'), findsOneWidget);
 
-    // Stop streaming
-    await tester.ensureVisible(find.text('Stop Streaming / Disconnect'));
-    await tester.tap(find.text('Stop Streaming / Disconnect'));
-    await tester.pump(const Duration(milliseconds: 500));
-    expect(find.text('Connect MobiDesk Dock'), findsOneWidget);
-  });
+      // Stop streaming
+      await tester.ensureVisible(find.text('Stop Streaming / Disconnect'));
+      await tester.tap(find.text('Stop Streaming / Disconnect'));
+      await tester.pump(const Duration(milliseconds: 500));
+      expect(find.text('Connect MobiDesk Dock'), findsOneWidget);
+    },
+  );
 
   testWidgets('DeveloperToolsScreen standalone execution and controls', (
     WidgetTester tester,

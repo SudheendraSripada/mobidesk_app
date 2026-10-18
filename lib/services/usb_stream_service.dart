@@ -30,8 +30,11 @@ class UsbStreamService {
   /// Queries USB hardware and accessory status.
   static Future<Map<String, dynamic>> getUsbStatus() async {
     try {
-      final res = await _channel.invokeMapMethod<String, dynamic>('getUsbStatus');
-      return res ?? {'hasAccessory': false, 'deviceCount': 0, 'isStreaming': false};
+      final res = await _channel.invokeMapMethod<String, dynamic>(
+        'getUsbStatus',
+      );
+      return res ??
+          {'hasAccessory': false, 'deviceCount': 0, 'isStreaming': false};
     } on MissingPluginException {
       return {'hasAccessory': false, 'deviceCount': 0, 'isStreaming': false};
     } catch (_) {
@@ -42,7 +45,9 @@ class UsbStreamService {
   /// Queries the dock's reported display info (width, height, fps).
   static Future<Map<String, dynamic>> getDockDisplayInfo() async {
     try {
-      final res = await _channel.invokeMapMethod<String, dynamic>('getDockDisplayInfo');
+      final res = await _channel.invokeMapMethod<String, dynamic>(
+        'getDockDisplayInfo',
+      );
       return res ??
           {
             'hasDock': false,
@@ -78,11 +83,12 @@ class UsbStreamService {
 
   /// Launches the native fullscreen landscape Phone Cloud PC activity.
   static Future<bool> startPhoneCloudPc(String sessionUrl) async {
+    if (sessionUrl.trim().isEmpty) return false;
+
     try {
-      final res = await _channel.invokeMethod<bool>(
-        'startPhoneCloudPc',
-        {'sessionUrl': sessionUrl},
-      );
+      final res = await _channel.invokeMethod<bool>('startPhoneCloudPc', {
+        'sessionUrl': sessionUrl,
+      });
       return res ?? false;
     } on MissingPluginException {
       return false;
@@ -152,7 +158,9 @@ class UsbStreamService {
   /// Requests exemption from Android battery optimization to prevent stream throttling.
   static Future<bool> requestIgnoreBatteryOptimizations() async {
     try {
-      final res = await _channel.invokeMethod<bool>('requestIgnoreBatteryOptimizations');
+      final res = await _channel.invokeMethod<bool>(
+        'requestIgnoreBatteryOptimizations',
+      );
       return res ?? false;
     } on MissingPluginException {
       return false;
@@ -164,7 +172,9 @@ class UsbStreamService {
   /// Checks whether MobiDesk is exempt from Android battery optimization.
   static Future<bool> isIgnoringBatteryOptimizations() async {
     try {
-      final res = await _channel.invokeMethod<bool>('isIgnoringBatteryOptimizations');
+      final res = await _channel.invokeMethod<bool>(
+        'isIgnoringBatteryOptimizations',
+      );
       return res ?? true;
     } on MissingPluginException {
       return true;
@@ -188,7 +198,9 @@ class UsbStreamService {
   /// Fetches real-time encoder and streaming statistics.
   static Future<Map<String, dynamic>> getStreamStats() async {
     try {
-      final res = await _channel.invokeMapMethod<String, dynamic>('getStreamStats');
+      final res = await _channel.invokeMapMethod<String, dynamic>(
+        'getStreamStats',
+      );
       return res ??
           {
             'fps': 0.0,
@@ -238,12 +250,15 @@ class UsbStreamService {
   }
 
   /// Updates Presentation display overlay status (connecting spinner or error with countdown).
-  static Future<bool> updatePresentationStatus(String? errorText, {int countdown = 0}) async {
+  static Future<bool> updatePresentationStatus(
+    String? errorText, {
+    int countdown = 0,
+  }) async {
     try {
-      final res = await _channel.invokeMethod<bool>('updatePresentationStatus', {
-        'errorText': errorText,
-        'countdown': countdown,
-      });
+      final res = await _channel.invokeMethod<bool>(
+        'updatePresentationStatus',
+        {'errorText': errorText, 'countdown': countdown},
+      );
       return res ?? false;
     } on MissingPluginException {
       return false;
@@ -255,9 +270,10 @@ class UsbStreamService {
   /// Updates Presentation display WebView URL when Guacamole token/session changes.
   static Future<bool> updatePresentationSessionUrl(String url) async {
     try {
-      final res = await _channel.invokeMethod<bool>('updatePresentationSessionUrl', {
-        'url': url,
-      });
+      final res = await _channel.invokeMethod<bool>(
+        'updatePresentationSessionUrl',
+        {'url': url},
+      );
       return res ?? false;
     } on MissingPluginException {
       return false;
@@ -305,14 +321,21 @@ class UsbStreamService {
   }
 
   /// Runs a single native system check.
-  static Future<Map<String, dynamic>> runSingleSystemCheck(String checkKey) async {
+  static Future<Map<String, dynamic>> runSingleSystemCheck(
+    String checkKey,
+  ) async {
     try {
-      final res = await _channel.invokeMapMethod<String, dynamic>('runSystemCheck', {
-        'check': checkKey,
-      });
-      return res ?? {'pass': false, 'detail': 'No response from native system check'};
+      final res = await _channel.invokeMapMethod<String, dynamic>(
+        'runSystemCheck',
+        {'check': checkKey},
+      );
+      return res ??
+          {'pass': false, 'detail': 'No response from native system check'};
     } on MissingPluginException {
-      return {'pass': false, 'detail': 'MissingPluginException (Native handler not attached)'};
+      return {
+        'pass': false,
+        'detail': 'MissingPluginException (Native handler not attached)',
+      };
     } catch (e) {
       return {'pass': false, 'detail': 'Check error: $e'};
     }
@@ -321,7 +344,9 @@ class UsbStreamService {
   /// Runs all 11 native system checks and returns results map.
   static Future<Map<String, dynamic>> runAllSystemChecks() async {
     try {
-      final res = await _channel.invokeMapMethod<String, dynamic>('runAllSystemChecks');
+      final res = await _channel.invokeMapMethod<String, dynamic>(
+        'runAllSystemChecks',
+      );
       return res ?? {};
     } on MissingPluginException {
       return {};

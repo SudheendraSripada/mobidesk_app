@@ -19,6 +19,17 @@ class ApiSecurityTests(unittest.TestCase):
         self.assignment_mock = self.assignment.start()
         self.addCleanup(self.assignment.stop)
 
+    def test_missing_bearer_token_is_rejected(self):
+        api.app.dependency_overrides.clear()
+        response = self.client.get("/api/v1/cloud-pc/status")
+        self.assertEqual(response.status_code, 401)
+
+    def test_unsupported_lifecycle_command_is_rejected(self):
+        with patch.object(api.subprocess, "run") as run:
+            with self.assertRaises(api.HTTPException):
+                api._virsh("destroy")
+        run.assert_not_called()
+
     def test_health_response_has_no_infrastructure_details(self):
         response = self.client.get("/healthz")
         self.assertEqual(response.status_code, 200)

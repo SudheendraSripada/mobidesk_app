@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.pm.ActivityInfo
 import android.graphics.Color
+import android.net.Uri
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Bundle
@@ -22,6 +23,8 @@ import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.WebResourceRequest
+import android.webkit.WebResourceError
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
@@ -88,7 +91,7 @@ class PhoneCloudPcActivity : Activity() {
                 builtInZoomControls = true
                 displayZoomControls = false
                 mediaPlaybackRequiresUserGesture = false
-                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
                 cacheMode = WebSettings.LOAD_DEFAULT
             }
             isFocusable = true
@@ -102,7 +105,36 @@ class PhoneCloudPcActivity : Activity() {
                 gestureDetector.onTouchEvent(event)
                 false
             }
-            webViewClient = object : WebViewClient() {}
+            val allowedHost = Uri.parse(sessionUrl).host
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(
+                    view: WebView?,
+                    request: WebResourceRequest?
+                ): Boolean {
+                    val uri = request?.url ?: return true
+                    // Keep the embedded client on the configured Guacamole origin.
+                    return uri.scheme !in listOf("https", "http") ||
+                        uri.host.isNullOrBlank() ||
+                        uri.host != allowedHost
+                }
+
+                override fun onReceivedError(
+                    view: WebView?,
+                    request: WebResourceRequest?,
+                    error: WebResourceError?
+                ) {
+                    super.onReceivedError(view, request, error)
+                    if (request?.isForMainFrame == true) {
+                        runOnUiThread {
+                            Toast.makeText(
+                                this@PhoneCloudPcActivity,
+                                "Cloud PC connection failed. Return to MobiDesk and try again.",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                }
+            }
             webChromeClient = object : WebChromeClient() {}
             loadUrl(sessionUrl)
         }

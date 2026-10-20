@@ -201,7 +201,7 @@ class SupabaseService {
 
       // 2. Query vms table for VM details using assigned vm_id
       final vmUri = Uri.parse(
-        '${config.supabaseUrl}/rest/v1/vms?select=id,name,guac_connection_id,hostname&id=eq.${Uri.encodeQueryComponent(assignedVmId)}&limit=1',
+        '${config.supabaseUrl}/rest/v1/vms?select=id,name,guac_connection_id&id=eq.${Uri.encodeQueryComponent(assignedVmId)}&limit=1',
       );
       final vmReq = await client.getUrl(vmUri);
       vmReq.headers.set('apikey', config.supabaseAnonKey);

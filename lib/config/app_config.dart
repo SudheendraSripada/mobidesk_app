@@ -5,6 +5,8 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 /// Reads configuration from local storage or defaults, ensuring no crashes occur
 /// if Supabase or Guacamole server settings are not yet entered.
 class AppConfig {
+  static const allowDemoMode = bool.fromEnvironment('ALLOW_DEMO_MODE', defaultValue: false);
+  static const allowServerSetup = bool.fromEnvironment('ALLOW_SERVER_SETUP', defaultValue: false);
   static const _supabaseUrlKey = 'config.supabaseUrl';
   static const _supabaseAnonKeyKey = 'config.supabaseAnonKey';
   static const _guacamoleBaseUrlKey = 'config.guacamoleBaseUrl';
@@ -42,7 +44,7 @@ class AppConfig {
       if (storedGuacamoleBaseUrl != null) {
         guacamoleBaseUrl = normalizeUrl(storedGuacamoleBaseUrl);
       }
-      if (storedDemoMode != null) isDemoMode = storedDemoMode == 'true';
+      isDemoMode = allowDemoMode && storedDemoMode == 'true';
     } catch (_) {
       // Keep environment-provided values and defaults if secure storage is unavailable.
     }

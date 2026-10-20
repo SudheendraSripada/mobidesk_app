@@ -181,6 +181,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _quickDemoLogin() {
+    if (!AppConfig.allowDemoMode) return;
     _usernameController.text = 'student@mobidesk.edu';
     _passwordController.text = 'MobiDesk2026!';
     AppConfig().isDemoMode = true;
@@ -207,7 +208,7 @@ class _LoginScreenState extends State<LoginScreen> {
           child: const Text('MobiDesk'),
         ),
         actions: [
-          IconButton(
+          if (AppConfig.allowServerSetup) IconButton(
             icon: const Icon(Icons.tune_rounded),
             tooltip: 'Server Setup',
             onPressed: () {
@@ -303,11 +304,11 @@ class _LoginScreenState extends State<LoginScreen> {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              'Supabase backend not configured. Use Quick Demo Login or configure in Setup.',
+                              'Server setup is incomplete. Contact the MobiDesk administrator.',
                               style: TextStyle(fontSize: 12, color: colorScheme.onSurfaceVariant),
                             ),
                           ),
-                          TextButton(
+                          if (AppConfig.allowServerSetup) TextButton(
                             onPressed: () {
                               Navigator.of(context).push(
                                 MaterialPageRoute<void>(builder: (_) => const SetupScreen()),
@@ -389,15 +390,17 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 10),
 
-                  OutlinedButton.icon(
-                    onPressed: _isLoading ? null : _quickDemoLogin,
-                    icon: const Icon(Icons.play_arrow_rounded),
-                    label: const Text('Quick Demo Login'),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
+                  if (AppConfig.allowDemoMode) ...[
+                    OutlinedButton.icon(
+                      onPressed: _isLoading ? null : _quickDemoLogin,
+                      icon: const Icon(Icons.play_arrow_rounded),
+                      label: const Text('Quick Demo Login'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 16),
+                    const SizedBox(height: 16),
+                  ],
 
                   Text(
                     'Tip: Long-press the MobiDesk logo to access USB hardware developer tools.',

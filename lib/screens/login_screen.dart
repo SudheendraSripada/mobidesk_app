@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import '../config/app_config.dart';
 import '../services/app_logger.dart';
 import '../services/auth_storage.dart';
-import '../services/guacamole_service.dart';
+import '../services/cloud_pc_session_service.dart';
 import '../services/supabase_service.dart';
 import '../services/usb_stream_service.dart';
 import 'dashboard_screen.dart';
@@ -71,9 +71,9 @@ class _LoginScreenState extends State<LoginScreen> {
     final username = _usernameController.text.trim();
     final password = _passwordController.text;
 
-    // Transformation: typed username to Supabase email & Guacamole username
+    // Student credentials are used only for Supabase Auth.
+    // Guacamole credentials remain server-side and are never requested from students.
     final supabaseEmail = username.contains('@') ? username : '$username@mobidesk.edu';
-    final guacUsername = username;
 
     try {
       final config = AppConfig();
@@ -81,40 +81,16 @@ class _LoginScreenState extends State<LoginScreen> {
         throw StateError('Server setup is incomplete. Please contact the administrator.');
       }
 
-      // 1. Authenticate against Guacamole REST API (/api/tokens)
-      var guacResult = await GuacamoleService.login(
-        username: guacUsername,
-        password: password,
-      );
-      String effectiveGuacUsername = guacUsername;
-      if (!guacResult.isSuccess && guacUsername != supabaseEmail) {
-        guacResult = await GuacamoleService.login(
-          username: supabaseEmail,
-          password: password,
-        );
-        if (guacResult.isSuccess) {
-          effectiveGuacUsername = supabaseEmail;
-        }
-      }
-
-      if (!config.isDemoMode && !guacResult.isSuccess) {
-        throw StateError('Cloud PC sign-in failed. Please check your account or contact the administrator.');
-      }
-
-      final authToken = guacResult.authToken ?? 'DEMO_TOKEN_2026';
-
-      // 2. Authenticate against Supabase Auth (/auth/v1/token?grant_type=password)
+      // 1. Authenticate the student with Supabase first.
       final supaAuth = await SupabaseService.login(
         email: supabaseEmail,
         password: password,
       );
 
-      if (!config.isDemoMode) {
-        if (!supaAuth.isSuccess) {
-          throw Exception(
-            supaAuth.errorMessage ?? 'Supabase authentication failed',
-          );
-        }
+      if (!config.isDemoMode && !supaAuth.isSuccess) {
+        throw StateError(
+          supaAuth.errorMessage ?? 'Supabase authentication failed. Check your email and password.',
+        );
       }
 
       // 3. Load student profile and VM mapping from Supabase (enforcing authenticated role & one VM per student)
@@ -130,9 +106,17 @@ class _LoginScreenState extends State<LoginScreen> {
         throw StateError('No Cloud PC is assigned to this account. Please contact the administrator.');
       }
 
-      // 4. Persist credentials in encrypted storage
+      // 4. Ask the private API for a Guacamole session only after Supabase
+      // authentication and the student-to-VM assignment have been verified.
+      final guacSession = await CloudPcSessionService.create(
+        supabaseAccessToken: supaAuth.accessToken ?? '',
+      );
+      final authToken = guacSession.authToken;
+
+      // Persist the student login for optional auto-sign-in. The Guacamole
+      // service-account credentials never leave the Azure host.
       await AuthStorage.saveCredentials(
-        username: effectiveGuacUsername,
+        username: supabaseEmail,
         password: password,
         authToken: authToken,
         keepSignedIn: _keepMeSignedIn,

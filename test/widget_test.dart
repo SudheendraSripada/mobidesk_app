@@ -155,7 +155,8 @@ void main() {
       expect(find.textContaining('Windows 11'), findsWidgets);
       expect(find.text('Open Fullscreen Cloud PC'), findsOneWidget);
       expect(find.text('Back to Dashboard'), findsOneWidget);
-      expect(find.textContaining('Gateway:'), findsOneWidget);
+      expect(find.text('Secure remote desktop session'), findsOneWidget);
+      expect(find.textContaining('Gateway:'), findsNothing);
       expect(find.textContaining('Session:'), findsNothing);
       expect(find.textContaining('token='), findsNothing);
 

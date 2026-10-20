@@ -54,7 +54,7 @@ class ApiSecurityTests(unittest.TestCase):
             response = self.client.post("/api/v1/cloud-pc/start")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {"state": "running", "ready": True})
-        self.assertEqual([call.args[0] for call in virsh.call_args_list], ["domstate"])
+        self.assertEqual([call.args[0] for call in virsh.call_args_list], ["domstate", "domstate"])
 
     def test_stop_requests_graceful_shutdown(self):
         with patch.object(api, "_virsh", side_effect=["running", "shutting down"]) as virsh, patch.object(

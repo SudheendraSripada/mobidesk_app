@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../config/app_config.dart';
-import '../models/vm_connection.dart';
 import '../services/app_logger.dart';
 import '../services/auth_storage.dart';
 import '../services/guacamole_service.dart';

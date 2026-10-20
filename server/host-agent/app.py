@@ -6,6 +6,7 @@ import socket
 import subprocess
 import threading
 import time
+import uuid
 from collections import defaultdict, deque
 from typing import Any
 
@@ -44,7 +45,6 @@ def require_student(authorization: str | None = Header(default=None)) -> dict[st
             raise ValueError("invalid session")
         user = response.json()
         user_id = str(user["id"])
-        import uuid
         uuid.UUID(user_id)
         return {"sub": user_id, "access_token": token}
     except Exception:
@@ -73,6 +73,10 @@ def _rest_get(path: str, token: str) -> list[dict[str, Any]]:
 def require_pilot_assignment(claims: dict[str, Any]) -> None:
     student_id = claims["sub"]
     pilot_id = _config("MOBIDESK_PILOT_VM_ID")
+    try:
+        uuid.UUID(pilot_id)
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=503, detail="Cloud PC service is not configured.") from None
     access_token = claims["access_token"]
     assignments = _rest_get(
         "student_vm_access?select=vm_id&student_id=eq."

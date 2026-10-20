@@ -61,7 +61,6 @@ class PhoneCloudPcActivity : Activity() {
             }
 
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-        applyFullScreen()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         rootLayout = FrameLayout(this).apply {
@@ -114,6 +113,13 @@ class PhoneCloudPcActivity : Activity() {
         rootLayout.addView(floatingToolbar)
 
         setContentView(rootLayout)
+
+        // Apply immersive fullscreen after the activity content is installed.
+        window.decorView.post {
+            if (!isFinishing && !isDestroyed) {
+                applyFullScreen()
+            }
+        }
     }
 
     private fun setupFloatingToolbar() {

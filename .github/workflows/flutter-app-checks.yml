@@ -37,6 +37,6 @@ jobs:
       - name: Analyze
         run: flutter analyze
       - name: Test
-        run: flutter test --concurrency=1
+        run: flutter test --concurrency=1 --dart-define=ALLOW_DEMO_MODE=true
       - name: Build debug APK
         run: flutter build apk --debug

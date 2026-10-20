@@ -77,6 +77,11 @@ class _LoginScreenState extends State<LoginScreen> {
     final guacUsername = username;
 
     try {
+      final config = AppConfig();
+      if (!config.isDemoMode && !config.isSupabaseConfigured) {
+        throw StateError('Server setup is incomplete. Please contact the administrator.');
+      }
+
       // 1. Authenticate against Guacamole REST API (/api/tokens)
       var guacResult = await GuacamoleService.login(
         username: guacUsername,
@@ -93,15 +98,8 @@ class _LoginScreenState extends State<LoginScreen> {
         }
       }
 
-      final config = AppConfig();
-      if (!config.isDemoMode) {
-        if (!guacResult.isSuccess &&
-            config.guacamoleBaseUrl.isNotEmpty &&
-            !config.guacamoleBaseUrl.contains('10.0.2.2')) {
-          throw Exception(
-            guacResult.errorMessage ?? 'Guacamole authentication failed',
-          );
-        }
+      if (!config.isDemoMode && !guacResult.isSuccess) {
+        throw StateError('Cloud PC sign-in failed. Please check your account or contact the administrator.');
       }
 
       final authToken = guacResult.authToken ?? 'DEMO_TOKEN_2026';
@@ -112,7 +110,7 @@ class _LoginScreenState extends State<LoginScreen> {
         password: password,
       );
 
-      if (!config.isDemoMode && config.isSupabaseConfigured) {
+      if (!config.isDemoMode) {
         if (!supaAuth.isSuccess) {
           throw Exception(
             supaAuth.errorMessage ?? 'Supabase authentication failed',
@@ -128,7 +126,10 @@ class _LoginScreenState extends State<LoginScreen> {
       final vm = await SupabaseService.getAssignedVm(
         studentId: supaAuth.userId,
         authToken: supaAuth.accessToken,
-      ) ?? VmConnection.mock();
+      );
+      if (vm == null || vm.id.isEmpty || vm.guacConnectionId.isEmpty) {
+        throw StateError('No Cloud PC is assigned to this account. Please contact the administrator.');
+      }
 
       // 4. Persist credentials in encrypted storage
       await AuthStorage.saveCredentials(
@@ -161,6 +162,7 @@ class _LoginScreenState extends State<LoginScreen> {
               student: student,
               vm: vm,
               guacAuthToken: authToken,
+              supabaseAccessToken: supaAuth.accessToken ?? '',
             ),
           ),
         );
@@ -168,7 +170,7 @@ class _LoginScreenState extends State<LoginScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _errorMessage = 'Login failed: $e';
+          _errorMessage = e is StateError ? e.message : 'Login failed. Please check your connection and try again.';
         });
       }
     } finally {

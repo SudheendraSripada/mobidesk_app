@@ -148,7 +148,7 @@ class _PhoneCloudPcScreenState extends State<PhoneCloudPcScreen> {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      'Host: ${widget.vm.hostname} (RDP :3389 via Guacamole)',
+                      'Secure remote desktop session',
                       style: const TextStyle(
                         color: Colors.white70,
                         fontSize: 13,
@@ -156,26 +156,7 @@ class _PhoneCloudPcScreenState extends State<PhoneCloudPcScreen> {
                       textAlign: TextAlign.center,
                     ),
                     const SizedBox(height: 16),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 8,
-                      ),
-                      decoration: BoxDecoration(
-                        color: Colors.black45,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        'Gateway: ${Uri.tryParse(AppConfig().guacamoleBaseUrl)?.host ?? 'Unavailable'}',
-                        style: const TextStyle(
-                          color: Colors.white60,
-                          fontSize: 11,
-                        ),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        textAlign: TextAlign.center,
-                      ),
-                    ),
+
                     const SizedBox(height: 24),
                     FilledButton.icon(
                       style: FilledButton.styleFrom(

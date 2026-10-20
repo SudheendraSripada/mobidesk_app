@@ -20,8 +20,10 @@ class AppConfig {
   String supabaseUrl = '';
   String supabaseAnonKey = '';
   String guacamoleBaseUrl = 'http://10.0.2.2:8080/guacamole';
+  String cloudPcApiBaseUrl = '';
 
-  bool isDemoMode = true;
+  // Production is fail-closed by default. Demo mode must be explicitly enabled.
+  bool isDemoMode = false;
 
   Future<void> load() async {
     try {
@@ -72,12 +74,16 @@ class AppConfig {
     const envUrl = String.fromEnvironment('SUPABASE_URL');
     const envKey = String.fromEnvironment('SUPABASE_ANON_KEY');
     const envGuac = String.fromEnvironment('GUACAMOLE_BASE_URL');
+    const envCloudApi = String.fromEnvironment('CLOUD_PC_API_BASE_URL');
     if (envUrl.isNotEmpty) {
       supabaseUrl = normalizeUrl(envUrl);
     }
     if (envKey.isNotEmpty) supabaseAnonKey = envKey.trim();
     if (envGuac.isNotEmpty) {
       guacamoleBaseUrl = normalizeUrl(envGuac);
+    }
+    if (envCloudApi.isNotEmpty) {
+      cloudPcApiBaseUrl = normalizeUrl(envCloudApi);
     }
   }
 

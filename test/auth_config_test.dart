@@ -11,7 +11,7 @@ void main() {
   group('Auth & Configuration Logic Tests', () {
     test('AppConfig default state and updates', () async {
       final config = AppConfig();
-      expect(config.isDemoMode, isTrue);
+      expect(config.isDemoMode, isFalse);
 
       await config.update(
         newSupabaseUrl: 'https://test-project.supabase.co',

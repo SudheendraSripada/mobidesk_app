@@ -11,7 +11,7 @@ Example in Codespaces after setting the four shell variables from trusted config
 ```bash
 flutter pub get
 flutter analyze
-flutter test --concurrency=1
+flutter test --concurrency=1 --dart-define=ALLOW_DEMO_MODE=true
 flutter build apk --debug \
   --dart-define=SUPABASE_URL="$SUPABASE_URL" \
   --dart-define=SUPABASE_ANON_KEY="$SUPABASE_ANON_KEY" \

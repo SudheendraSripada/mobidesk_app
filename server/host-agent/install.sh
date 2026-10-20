@@ -32,6 +32,11 @@ if ! id -u mobidesk-api >/dev/null 2>&1; then
   useradd --system --no-create-home --shell /usr/sbin/nologin mobidesk-api
 fi
 
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update -qq
+  DEBIAN_FRONTEND=noninteractive apt-get install -y python3-venv curl
+fi
+
 install -d -o root -g root -m 0755 "${APP_DIR}"
 install -o root -g root -m 0644 "${SOURCE_DIR}/app.py" "${APP_DIR}/app.py"
 install -o root -g root -m 0644 "${SOURCE_DIR}/requirements.txt" "${APP_DIR}/requirements.txt"

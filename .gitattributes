@@ -1,1 +1,2 @@
 executables[[:space:]]apks/app-debug.apk filter=lfs diff=lfs merge=lfs -text
+executables[[:space:]]apks/app-debug[[:space:]]copy.apk filter=lfs diff=lfs merge=lfs -text

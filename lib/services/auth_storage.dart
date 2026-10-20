@@ -1,111 +1,88 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-/// Manages encrypted credential and session persistence for silent re-authentication.
+/// Stores the student's opt-in sign-in details in Android secure storage.
+///
+/// Secure-storage operations are awaited without an artificially short timeout:
+/// a timeout followed by a swallowed exception can make "Keep me signed in"
+/// appear enabled even though the values were never persisted.
 class AuthStorage {
-  static const _storage = FlutterSecureStorage();
+  static const _storage = FlutterSecureStorage(
+    aOptions: AndroidOptions(),
+  );
   static const _keyKeepSignedIn = 'mobidesk_keep_signed_in';
   static const _keyUsername = 'mobidesk_saved_username';
   static const _keyPassword = 'mobidesk_saved_password';
   static const _keyAuthToken = 'mobidesk_saved_auth_token';
 
-  static final Map<String, String> _inMemoryFallback = {};
-
-  /// Returns true if the user opted to "Keep me signed in".
+  /// Returns true only when the preference was persisted or the storage
+  /// operation has not yet completed in this process.
   static Future<bool> isKeepSignedIn() async {
     try {
-      final val = await _storage
-          .read(key: _keyKeepSignedIn)
-          .timeout(const Duration(milliseconds: 250));
-      return (val ?? _inMemoryFallback[_keyKeepSignedIn]) == 'true';
+      final value = await _storage.read(key: _keyKeepSignedIn);
+      return value == 'true';
     } catch (_) {
-      return _inMemoryFallback[_keyKeepSignedIn] == 'true';
+      return false;
     }
   }
 
-  /// Stores user credentials securely in Android EncryptedSharedPreferences / KeyStore.
+  /// Persists the opt-in credentials in the platform secure-storage backend.
+  /// Errors are surfaced to the caller instead of silently reporting success.
   static Future<void> saveCredentials({
     required String username,
     required String password,
     String? authToken,
     bool keepSignedIn = true,
   }) async {
-    _inMemoryFallback[_keyKeepSignedIn] = keepSignedIn.toString();
-    if (keepSignedIn) {
-      _inMemoryFallback[_keyUsername] = username;
-      _inMemoryFallback[_keyPassword] = password;
-      if (authToken != null) _inMemoryFallback[_keyAuthToken] = authToken;
-    } else {
-      _inMemoryFallback.clear();
+    if (!keepSignedIn) {
+      await clear();
+      return;
     }
 
-    try {
-      await _storage
-          .write(key: _keyKeepSignedIn, value: keepSignedIn.toString())
-          .timeout(const Duration(milliseconds: 250));
-      if (keepSignedIn) {
-        await _storage
-            .write(key: _keyUsername, value: username)
-            .timeout(const Duration(milliseconds: 250));
-        await _storage
-            .write(key: _keyPassword, value: password)
-            .timeout(const Duration(milliseconds: 250));
-        if (authToken != null) {
-          await _storage
-              .write(key: _keyAuthToken, value: authToken)
-              .timeout(const Duration(milliseconds: 250));
-        }
-      } else {
-        await clear();
-      }
-    } catch (_) {}
+    await _storage.write(key: _keyUsername, value: username);
+    await _storage.write(key: _keyPassword, value: password);
+    if (authToken != null && authToken.isNotEmpty) {
+      await _storage.write(key: _keyAuthToken, value: authToken);
+    }
+    await _storage.write(key: _keyKeepSignedIn, value: 'true');
   }
 
-  /// Loads saved credentials for silent re-authentication.
+  /// Loads the saved values. A failed read is treated as no saved session,
+  /// rather than relying on an in-memory cache that disappears on app restart.
   static Future<Map<String, String?>> getCredentials() async {
     try {
-      final username = await _storage
-          .read(key: _keyUsername)
-          .timeout(const Duration(milliseconds: 250));
-      final password = await _storage
-          .read(key: _keyPassword)
-          .timeout(const Duration(milliseconds: 250));
-      final authToken = await _storage
-          .read(key: _keyAuthToken)
-          .timeout(const Duration(milliseconds: 250));
-      final keep = await isKeepSignedIn();
+      final keep = await _storage.read(key: _keyKeepSignedIn) == 'true';
+      if (!keep) {
+        return {
+          'username': null,
+          'password': null,
+          'authToken': null,
+          'keepSignedIn': 'false',
+        };
+      }
+      final username = await _storage.read(key: _keyUsername);
+      final password = await _storage.read(key: _keyPassword);
+      final authToken = await _storage.read(key: _keyAuthToken);
       return {
-        'username': username ?? _inMemoryFallback[_keyUsername],
-        'password': password ?? _inMemoryFallback[_keyPassword],
-        'authToken': authToken ?? _inMemoryFallback[_keyAuthToken],
-        'keepSignedIn': keep.toString(),
+        'username': username,
+        'password': password,
+        'authToken': authToken,
+        'keepSignedIn': 'true',
       };
     } catch (_) {
-      final keep = _inMemoryFallback[_keyKeepSignedIn] == 'true';
       return {
-        'username': _inMemoryFallback[_keyUsername],
-        'password': _inMemoryFallback[_keyPassword],
-        'authToken': _inMemoryFallback[_keyAuthToken],
-        'keepSignedIn': keep.toString(),
+        'username': null,
+        'password': null,
+        'authToken': null,
+        'keepSignedIn': 'false',
       };
     }
   }
 
-  /// Clears stored credentials.
+  /// Removes persisted credentials and tokens.
   static Future<void> clear() async {
-    _inMemoryFallback.clear();
-    try {
-      await _storage
-          .delete(key: _keyKeepSignedIn)
-          .timeout(const Duration(milliseconds: 250));
-      await _storage
-          .delete(key: _keyUsername)
-          .timeout(const Duration(milliseconds: 250));
-      await _storage
-          .delete(key: _keyPassword)
-          .timeout(const Duration(milliseconds: 250));
-      await _storage
-          .delete(key: _keyAuthToken)
-          .timeout(const Duration(milliseconds: 250));
-    } catch (_) {}
+    await _storage.delete(key: _keyKeepSignedIn);
+    await _storage.delete(key: _keyUsername);
+    await _storage.delete(key: _keyPassword);
+    await _storage.delete(key: _keyAuthToken);
   }
 }

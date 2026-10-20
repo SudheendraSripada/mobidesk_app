@@ -43,6 +43,12 @@ private Tailscale Serve setup only after validating the local service.
 
 The API accepts no VM ID, hostname, port, shell command, or libvirt action from callers. It uses only a fixed domain and allowlisted `virsh` operations. It returns generic errors without host output or infrastructure details. Readiness checks require both the host-local Guacamole TCP port and guest RDP port to accept connections; that does not replace a real end-to-end desktop login test.
 
+## Install on the Azure host
+
+Create `/etc/mobidesk/host-agent.env` with root ownership and mode 0600 before running the installer. It must contain `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and `MOBIDESK_PILOT_VM_ID` set to real values. The guest IP/port and Guacamole host/port can use the documented defaults or be explicitly configured. Never commit this environment file.
+
+From this directory, run `sudo ./install.sh`. The installer creates the unprivileged service account, installs the root-owned fixed-domain helper and restricted sudoers rules, installs runtime dependencies, and starts a systemd unit bound to `127.0.0.1:8765`. It does not change Tailscale Serve or any public firewall rules. Inspect `systemctl status mobidesk-host-agent` and `journalctl -u mobidesk-host-agent` if local health verification fails.
+
 ## Local validation
 
-Use a dedicated virtual environment, install `requirements.txt`, then run `pytest -q`. For local-only manual inspection, bind Uvicorn to `127.0.0.1` with one worker. Before deployment, configure a least-privilege system service that can access only the required libvirt operations, and add it behind the existing private Tailscale Serve route without replacing the working Guacamole route.
+Use a dedicated virtual environment, install `requirements-dev.txt`, then run `pytest -q`. For local-only manual inspection, bind Uvicorn to `127.0.0.1` with one worker. Before deployment, configure a least-privilege system service that can access only the required libvirt operations, and add it behind the existing private Tailscale Serve route without replacing the working Guacamole route.

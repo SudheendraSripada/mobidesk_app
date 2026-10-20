@@ -35,13 +35,17 @@ class AppConfig {
       final storedGuacamoleBaseUrl = values[_guacamoleBaseUrlKey];
       final storedDemoMode = values[_demoModeKey];
 
-      if (storedSupabaseUrl != null) {
+      const envSupabaseUrl = String.fromEnvironment('SUPABASE_URL');
+      const envSupabaseKey = String.fromEnvironment('SUPABASE_ANON_KEY');
+      const envGuacamoleUrl = String.fromEnvironment('GUACAMOLE_BASE_URL');
+
+      if (storedSupabaseUrl != null && envSupabaseUrl.isEmpty) {
         supabaseUrl = normalizeUrl(storedSupabaseUrl);
       }
-      if (storedSupabaseAnonKey != null) {
+      if (storedSupabaseAnonKey != null && envSupabaseKey.isEmpty) {
         supabaseAnonKey = storedSupabaseAnonKey.trim();
       }
-      if (storedGuacamoleBaseUrl != null) {
+      if (storedGuacamoleBaseUrl != null && envGuacamoleUrl.isEmpty) {
         guacamoleBaseUrl = normalizeUrl(storedGuacamoleBaseUrl);
       }
       isDemoMode = allowDemoMode && storedDemoMode == 'true';

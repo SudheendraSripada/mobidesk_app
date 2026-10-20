@@ -20,11 +20,11 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _usernameController = TextEditingController(text: 'student@mobidesk.edu');
-  final _passwordController = TextEditingController(text: 'MobiDesk2026!');
+  final _usernameController = TextEditingController();
+  final _passwordController = TextEditingController();
   bool _isLoading = false;
   bool _obscurePassword = true;
-  bool _keepMeSignedIn = true;
+  bool _keepMeSignedIn = false;
   String? _errorMessage;
 
   @override

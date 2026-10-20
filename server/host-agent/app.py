@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-import re
 import socket
 import subprocess
 import threading
@@ -14,7 +13,6 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 
 app = FastAPI(title="MobiDesk Private Cloud PC API", docs_url=None, redoc_url=None)
-DOMAIN_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 _rate_lock = threading.Lock()
 _mutations: dict[str, deque[float]] = defaultdict(deque)
 
@@ -88,19 +86,14 @@ def require_pilot_assignment(claims: dict[str, Any]) -> None:
         raise HTTPException(status_code=403, detail="No Cloud PC is assigned to this account.")
 
 
-def _domain_name() -> str:
-    domain = _config("MOBIDESK_LIBVIRT_DOMAIN", "mobidesk-test-01")
-    if not DOMAIN_RE.fullmatch(domain):
-        raise HTTPException(status_code=503, detail="Cloud PC service is not configured.")
-    return domain
-
-
 def _virsh(action: str) -> str:
+    # The root-owned helper fixes the domain name and independently validates
+    # exactly one allowlisted action. The API never invokes a shell.
     if action not in {"domstate", "start", "shutdown"}:
         raise HTTPException(status_code=500, detail="Unsupported lifecycle operation.")
     try:
         result = subprocess.run(
-            ["virsh", "-c", "qemu:///system", action, _domain_name()],
+            ["sudo", "-n", "/usr/local/sbin/mobidesk-vm-control", action],
             check=False, capture_output=True, text=True, timeout=8,
         )
     except Exception:

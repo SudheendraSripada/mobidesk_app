@@ -1,0 +1,25 @@
+[Unit]
+Description=MobiDesk private pilot Cloud PC API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mobidesk-api
+Group=mobidesk-api
+WorkingDirectory=/opt/mobidesk-host-agent
+EnvironmentFile=/etc/mobidesk/host-agent.env
+ExecStart=/opt/mobidesk-host-agent/venv/bin/uvicorn app:app --host 127.0.0.1 --port 8765 --workers 1
+Restart=on-failure
+RestartSec=3
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -153,6 +153,42 @@ def cloud_pc_status(claims: dict[str, Any] = Depends(require_student)) -> dict[s
             "ready": running and _guest_ready()}
 
 
+@app.post("/api/v1/cloud-pc/session")
+def cloud_pc_session(claims: dict[str, Any] = Depends(require_student)) -> dict[str, str]:
+    """Issue a restricted Guacamole session only after validating the student's assignment.
+
+    The configured Guacamole account MUST be a dedicated, non-admin account with
+    READ permission only to the pilot connection. Never configure guacadmin here.
+    """
+    require_pilot_assignment(claims)
+    _rate_limit(claims["sub"])
+
+    base_url = _config("MOBIDESK_GUAC_BASE_URL").rstrip("/")
+    username = _config("MOBIDESK_GUAC_USERNAME")
+    password = _config("MOBIDESK_GUAC_PASSWORD")
+    try:
+        response = httpx.post(
+            f"{base_url}/api/tokens",
+            data={"username": username, "password": password},
+            timeout=8.0,
+        )
+        if response.status_code != 200:
+            raise ValueError("Guacamole rejected the restricted session account")
+        payload = response.json()
+        auth_token = payload.get("authToken")
+        data_source = payload.get("dataSource", "postgresql")
+        if not isinstance(auth_token, str) or not auth_token:
+            raise ValueError("Guacamole returned no session token")
+        if not isinstance(data_source, str) or not data_source:
+            data_source = "postgresql"
+        return {"authToken": auth_token, "dataSource": data_source}
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Cloud PC session is unavailable. Please contact the administrator.",
+        ) from None
+
+
 @app.post("/api/v1/cloud-pc/start")
 def cloud_pc_start(claims: dict[str, Any] = Depends(require_student)) -> dict[str, Any]:
     require_pilot_assignment(claims)

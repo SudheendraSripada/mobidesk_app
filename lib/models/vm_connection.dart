@@ -16,8 +16,8 @@ class VmConnection {
     return VmConnection(
       id: json['id'] as String? ?? '',
       name: json['name'] as String? ?? 'Student Windows VM',
-      guacConnectionId: json['guac_connection_id']?.toString() ?? '1',
-      hostname: json['hostname'] as String? ?? '10.0.1.101',
+      guacConnectionId: json['guac_connection_id']?.toString() ?? '',
+      hostname: json['hostname'] as String? ?? '',
     );
   }
 

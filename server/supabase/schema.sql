@@ -79,6 +79,18 @@ CREATE POLICY "Students can view assigned VMs"
     );
 
 -- ==============================================================================
+-- Data API grants: RLS restricts rows; SQL privileges restrict which columns
+-- authenticated students may select. Do not grant hostname or other host config.
+-- ==============================================================================
+GRANT USAGE ON SCHEMA public TO authenticated;
+GRANT SELECT ON TABLE public.students TO authenticated;
+GRANT SELECT ON TABLE public.student_vm_access TO authenticated;
+
+REVOKE ALL ON TABLE public.vms FROM PUBLIC, anon, authenticated;
+GRANT SELECT (id, name, guac_connection_id)
+    ON TABLE public.vms TO authenticated;
+
+-- ==============================================================================
 -- Realistic Seed Data Examples
 -- ==============================================================================
 

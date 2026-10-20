@@ -1,0 +1,16 @@
+#!/bin/sh
+# Install root-owned as /usr/local/sbin/mobidesk-vm-control (mode 0755).
+# The API service may request only these operations on this fixed pilot domain.
+set -eu
+
+if [ "$#" -ne 1 ]; then
+  echo "invalid arguments" >&2
+  exit 64
+fi
+
+case "$1" in
+  domstate|start|shutdown) action="$1" ;;
+  *) echo "unsupported operation" >&2; exit 64 ;;
+esac
+
+exec /usr/bin/virsh -c qemu:///system "$action" mobidesk-test-01

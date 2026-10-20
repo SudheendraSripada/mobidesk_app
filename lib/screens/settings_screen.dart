@@ -72,7 +72,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Card(
+                if (AppConfig.allowServerSetup) Card(
                   elevation: 0,
                   color: colorScheme.surfaceContainerHighest,
                   shape: RoundedRectangleBorder(
@@ -111,7 +111,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 16),
 
-                Card(
+                if (AppConfig.allowDemoMode) Card(
                   elevation: 0,
                   color: colorScheme.surfaceContainerHighest,
                   shape: RoundedRectangleBorder(
@@ -180,7 +180,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 24),
 
-                FilledButton.icon(
+                if (AppConfig.allowServerSetup || AppConfig.allowDemoMode) FilledButton.icon(
                   onPressed: _save,
                   icon: const Icon(Icons.check_rounded),
                   label: const Text('Save Changes'),

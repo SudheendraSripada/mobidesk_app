@@ -5,6 +5,8 @@ import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 /// Reads configuration from local storage or defaults, ensuring no crashes occur
 /// if Supabase or Guacamole server settings are not yet entered.
 class AppConfig {
+  static const allowDemoMode = bool.fromEnvironment('ALLOW_DEMO_MODE', defaultValue: false);
+  static const allowServerSetup = bool.fromEnvironment('ALLOW_SERVER_SETUP', defaultValue: false);
   static const _supabaseUrlKey = 'config.supabaseUrl';
   static const _supabaseAnonKeyKey = 'config.supabaseAnonKey';
   static const _guacamoleBaseUrlKey = 'config.guacamoleBaseUrl';
@@ -20,8 +22,10 @@ class AppConfig {
   String supabaseUrl = '';
   String supabaseAnonKey = '';
   String guacamoleBaseUrl = 'http://10.0.2.2:8080/guacamole';
+  String cloudPcApiBaseUrl = '';
 
-  bool isDemoMode = true;
+  // Production is fail-closed by default. Demo mode must be explicitly enabled.
+  bool isDemoMode = false;
 
   Future<void> load() async {
     try {
@@ -31,16 +35,20 @@ class AppConfig {
       final storedGuacamoleBaseUrl = values[_guacamoleBaseUrlKey];
       final storedDemoMode = values[_demoModeKey];
 
-      if (storedSupabaseUrl != null) {
+      const envSupabaseUrl = String.fromEnvironment('SUPABASE_URL');
+      const envSupabaseKey = String.fromEnvironment('SUPABASE_ANON_KEY');
+      const envGuacamoleUrl = String.fromEnvironment('GUACAMOLE_BASE_URL');
+
+      if (storedSupabaseUrl != null && envSupabaseUrl.isEmpty) {
         supabaseUrl = normalizeUrl(storedSupabaseUrl);
       }
-      if (storedSupabaseAnonKey != null) {
+      if (storedSupabaseAnonKey != null && envSupabaseKey.isEmpty) {
         supabaseAnonKey = storedSupabaseAnonKey.trim();
       }
-      if (storedGuacamoleBaseUrl != null) {
+      if (storedGuacamoleBaseUrl != null && envGuacamoleUrl.isEmpty) {
         guacamoleBaseUrl = normalizeUrl(storedGuacamoleBaseUrl);
       }
-      if (storedDemoMode != null) isDemoMode = storedDemoMode == 'true';
+      isDemoMode = allowDemoMode && storedDemoMode == 'true';
     } catch (_) {
       // Keep environment-provided values and defaults if secure storage is unavailable.
     }
@@ -72,12 +80,16 @@ class AppConfig {
     const envUrl = String.fromEnvironment('SUPABASE_URL');
     const envKey = String.fromEnvironment('SUPABASE_ANON_KEY');
     const envGuac = String.fromEnvironment('GUACAMOLE_BASE_URL');
+    const envCloudApi = String.fromEnvironment('CLOUD_PC_API_BASE_URL');
     if (envUrl.isNotEmpty) {
       supabaseUrl = normalizeUrl(envUrl);
     }
     if (envKey.isNotEmpty) supabaseAnonKey = envKey.trim();
     if (envGuac.isNotEmpty) {
       guacamoleBaseUrl = normalizeUrl(envGuac);
+    }
+    if (envCloudApi.isNotEmpty) {
+      cloudPcApiBaseUrl = normalizeUrl(envCloudApi);
     }
   }
 

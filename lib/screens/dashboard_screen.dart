@@ -6,18 +6,21 @@ import '../models/vm_connection.dart';
 import 'developer_tools_screen.dart';
 import 'monitor_mode_screen.dart';
 import 'phone_cloud_pc_screen.dart';
+import 'cloud_pc_lifecycle_card.dart';
 import 'settings_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   final StudentProfile student;
   final VmConnection vm;
   final String guacAuthToken;
+  final String supabaseAccessToken;
 
   const DashboardScreen({
     super.key,
     required this.student,
     required this.vm,
     required this.guacAuthToken,
+    required this.supabaseAccessToken,
   });
 
   @override
@@ -25,6 +28,7 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
+  bool _cloudPcReady = false;
   final AttendanceSummary _attendance = AttendanceSummary.mock();
   final List<QuizItem> _quizzes = QuizItem.mockList();
   final AcademicOverview _academicOverview = AcademicOverview.mock();
@@ -232,34 +236,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ),
                   ),
                 ),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.green.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.circle, color: Colors.green, size: 8),
-                      SizedBox(width: 6),
-                      Text(
-                        'Online',
-                        style: TextStyle(
-                          color: Colors.green,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
+
               ],
             ),
-            const SizedBox(height: 10),
+            CloudPcLifecycleCard(
+              supabaseAccessToken: widget.supabaseAccessToken,
+              onReadinessChanged: (ready) {
+                if (mounted) setState(() => _cloudPcReady = ready);
+              },
+            ),
+            const SizedBox(height: 12),
             Text(
               widget.vm.name,
               style: theme.textTheme.bodyLarge?.copyWith(
@@ -267,7 +253,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
             Text(
-              'RDP :3389 • Host: ${widget.vm.hostname}',
+              'Your assigned Cloud PC',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: colorScheme.onSurfaceVariant,
               ),
@@ -289,7 +275,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                    onPressed: () {
+                    onPressed: _cloudPcReady ? () {
                       Navigator.of(context).push(
                         MaterialPageRoute<void>(
                           builder: (_) => PhoneCloudPcScreen(
@@ -298,7 +284,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ),
                         ),
                       );
-                    },
+                    } : null,
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -341,7 +327,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                    onPressed: () {
+                    onPressed: _cloudPcReady ? () {
                       Navigator.of(context).push(
                         MaterialPageRoute<void>(
                           builder: (_) => MonitorModeScreen(
@@ -350,7 +336,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           ),
                         ),
                       );
-                    },
+                    } : null,
                     child: const Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [

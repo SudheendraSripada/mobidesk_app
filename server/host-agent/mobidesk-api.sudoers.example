@@ -1,0 +1,5 @@
+# Install as /etc/sudoers.d/mobidesk-api using visudo -cf before enabling.
+# The root-owned helper hardcodes the pilot VM and rejects extra arguments.
+mobidesk-api ALL=(root) NOPASSWD: /usr/local/sbin/mobidesk-vm-control domstate
+mobidesk-api ALL=(root) NOPASSWD: /usr/local/sbin/mobidesk-vm-control start
+mobidesk-api ALL=(root) NOPASSWD: /usr/local/sbin/mobidesk-vm-control shutdown

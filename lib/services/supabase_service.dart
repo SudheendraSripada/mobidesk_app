@@ -37,12 +37,19 @@ class SupabaseService {
   }) async {
     final config = AppConfig();
 
-    if (!config.isSupabaseConfigured || config.isDemoMode) {
+    if (config.isDemoMode) {
       return const SupabaseAuthResult(
         isSuccess: true,
         accessToken: 'DEMO_MOBI_DESK_SUPABASE_TOKEN_2026',
         userId: 'd0000000-0000-0000-0000-000000000001',
         email: 'student@mobidesk.edu',
+      );
+    }
+
+    if (!config.isSupabaseConfigured) {
+      return const SupabaseAuthResult(
+        isSuccess: false,
+        errorMessage: 'Server setup is incomplete. Please contact the administrator.',
       );
     }
 
@@ -104,8 +111,9 @@ class SupabaseService {
   }) async {
     final config = AppConfig();
 
-    if (!config.isSupabaseConfigured || config.isDemoMode) {
-      return StudentProfile.mock();
+    if (config.isDemoMode) return StudentProfile.mock();
+    if (!config.isSupabaseConfigured) {
+      throw StateError('Server setup is incomplete. Please contact the administrator.');
     }
 
     HttpClient? client;
@@ -135,12 +143,12 @@ class SupabaseService {
         }
       }
     } catch (_) {
-      // Fallback on error
+      // Never substitute a demo identity for a failed production profile lookup.
     } finally {
       client?.close();
     }
 
-    return StudentProfile.mock();
+    throw StateError('Unable to load your student profile. Please try again.');
   }
 
   /// Fetches the student's assigned VM from `vms(id, name, guac_connection_id, hostname)`
@@ -152,8 +160,9 @@ class SupabaseService {
   }) async {
     final config = AppConfig();
 
-    if (!config.isSupabaseConfigured || config.isDemoMode) {
-      return VmConnection.mock();
+    if (config.isDemoMode) return VmConnection.mock();
+    if (!config.isSupabaseConfigured) {
+      throw StateError('Server setup is incomplete. Please contact the administrator.');
     }
 
     HttpClient? client;
@@ -167,7 +176,7 @@ class SupabaseService {
           ? '&student_id=eq.${Uri.encodeQueryComponent(studentId)}'
           : '';
       final accessUri = Uri.parse(
-        '${config.supabaseUrl}/rest/v1/student_vm_access?select=student_id,vm_id$accessFilter&limit=1',
+        '${config.supabaseUrl}/rest/v1/student_vm_access?select=student_id,vm_id$accessFilter&limit=2',
       );
       final accessReq = await client.getUrl(accessUri);
       accessReq.headers.set('apikey', config.supabaseAnonKey);
@@ -179,7 +188,7 @@ class SupabaseService {
       if (accessRes.statusCode == 200) {
         final accessBody = await accessRes.transform(utf8.decoder).join();
         final accessList = jsonDecode(accessBody) as List<dynamic>;
-        if (accessList.isNotEmpty) {
+        if (accessList.length == 1) {
           final mapping = accessList.first as Map<String, dynamic>;
           assignedVmId = mapping['vm_id'] as String?;
         }
@@ -192,7 +201,7 @@ class SupabaseService {
 
       // 2. Query vms table for VM details using assigned vm_id
       final vmUri = Uri.parse(
-        '${config.supabaseUrl}/rest/v1/vms?select=id,name,guac_connection_id,hostname&id=eq.${Uri.encodeQueryComponent(assignedVmId)}&limit=1',
+        '${config.supabaseUrl}/rest/v1/vms?select=id,name,guac_connection_id&id=eq.${Uri.encodeQueryComponent(assignedVmId)}&limit=1',
       );
       final vmReq = await client.getUrl(vmUri);
       vmReq.headers.set('apikey', config.supabaseAnonKey);
@@ -208,7 +217,7 @@ class SupabaseService {
       }
       return null;
     } catch (_) {
-      // Fallback on error: return null so caller can handle missing VM or offline fallback
+      // Fail closed: the caller must not substitute a demo VM in production.
       return null;
     } finally {
       client?.close();

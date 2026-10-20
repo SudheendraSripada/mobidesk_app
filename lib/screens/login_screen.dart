@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../config/app_config.dart';
-import '../models/vm_connection.dart';
 import '../services/app_logger.dart';
 import '../services/auth_storage.dart';
 import '../services/guacamole_service.dart';
@@ -20,11 +19,11 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
-  final _usernameController = TextEditingController(text: 'student@mobidesk.edu');
-  final _passwordController = TextEditingController(text: 'MobiDesk2026!');
+  final _usernameController = TextEditingController();
+  final _passwordController = TextEditingController();
   bool _isLoading = false;
   bool _obscurePassword = true;
-  bool _keepMeSignedIn = true;
+  bool _keepMeSignedIn = false;
   String? _errorMessage;
 
   @override
@@ -77,6 +76,11 @@ class _LoginScreenState extends State<LoginScreen> {
     final guacUsername = username;
 
     try {
+      final config = AppConfig();
+      if (!config.isDemoMode && !config.isSupabaseConfigured) {
+        throw StateError('Server setup is incomplete. Please contact the administrator.');
+      }
+
       // 1. Authenticate against Guacamole REST API (/api/tokens)
       var guacResult = await GuacamoleService.login(
         username: guacUsername,
@@ -93,15 +97,8 @@ class _LoginScreenState extends State<LoginScreen> {
         }
       }
 
-      final config = AppConfig();
-      if (!config.isDemoMode) {
-        if (!guacResult.isSuccess &&
-            config.guacamoleBaseUrl.isNotEmpty &&
-            !config.guacamoleBaseUrl.contains('10.0.2.2')) {
-          throw Exception(
-            guacResult.errorMessage ?? 'Guacamole authentication failed',
-          );
-        }
+      if (!config.isDemoMode && !guacResult.isSuccess) {
+        throw StateError('Cloud PC sign-in failed. Please check your account or contact the administrator.');
       }
 
       final authToken = guacResult.authToken ?? 'DEMO_TOKEN_2026';
@@ -112,7 +109,7 @@ class _LoginScreenState extends State<LoginScreen> {
         password: password,
       );
 
-      if (!config.isDemoMode && config.isSupabaseConfigured) {
+      if (!config.isDemoMode) {
         if (!supaAuth.isSuccess) {
           throw Exception(
             supaAuth.errorMessage ?? 'Supabase authentication failed',
@@ -128,7 +125,10 @@ class _LoginScreenState extends State<LoginScreen> {
       final vm = await SupabaseService.getAssignedVm(
         studentId: supaAuth.userId,
         authToken: supaAuth.accessToken,
-      ) ?? VmConnection.mock();
+      );
+      if (vm == null || vm.id.isEmpty || vm.guacConnectionId.isEmpty) {
+        throw StateError('No Cloud PC is assigned to this account. Please contact the administrator.');
+      }
 
       // 4. Persist credentials in encrypted storage
       await AuthStorage.saveCredentials(
@@ -161,6 +161,7 @@ class _LoginScreenState extends State<LoginScreen> {
               student: student,
               vm: vm,
               guacAuthToken: authToken,
+              supabaseAccessToken: supaAuth.accessToken ?? '',
             ),
           ),
         );
@@ -168,7 +169,7 @@ class _LoginScreenState extends State<LoginScreen> {
     } catch (e) {
       if (mounted) {
         setState(() {
-          _errorMessage = 'Login failed: $e';
+          _errorMessage = e is StateError ? e.message : 'Login failed. Please check your connection and try again.';
         });
       }
     } finally {
@@ -179,6 +180,7 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   void _quickDemoLogin() {
+    if (!AppConfig.allowDemoMode) return;
     _usernameController.text = 'student@mobidesk.edu';
     _passwordController.text = 'MobiDesk2026!';
     AppConfig().isDemoMode = true;
@@ -205,7 +207,7 @@ class _LoginScreenState extends State<LoginScreen> {
           child: const Text('MobiDesk'),
         ),
         actions: [
-          IconButton(
+          if (AppConfig.allowServerSetup) IconButton(
             icon: const Icon(Icons.tune_rounded),
             tooltip: 'Server Setup',
             onPressed: () {
@@ -287,7 +289,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                     ),
                     const SizedBox(height: 16),
-                  ] else if (!AppConfig().isSupabaseConfigured && !AppConfig().isDemoMode) ...[
+                  ] else if (!AppConfig().isSupabaseConfigured && !AppConfig().isDemoMode && !AppConfig.allowDemoMode) ...[
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(
@@ -301,11 +303,11 @@ class _LoginScreenState extends State<LoginScreen> {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              'Supabase backend not configured. Use Quick Demo Login or configure in Setup.',
+                              'Server setup is incomplete. Contact the MobiDesk administrator.',
                               style: TextStyle(fontSize: 12, color: colorScheme.onSurfaceVariant),
                             ),
                           ),
-                          TextButton(
+                          if (AppConfig.allowServerSetup) TextButton(
                             onPressed: () {
                               Navigator.of(context).push(
                                 MaterialPageRoute<void>(builder: (_) => const SetupScreen()),
@@ -387,15 +389,17 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 10),
 
-                  OutlinedButton.icon(
-                    onPressed: _isLoading ? null : _quickDemoLogin,
-                    icon: const Icon(Icons.play_arrow_rounded),
-                    label: const Text('Quick Demo Login'),
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
+                  if (AppConfig.allowDemoMode) ...[
+                    OutlinedButton.icon(
+                      onPressed: _isLoading ? null : _quickDemoLogin,
+                      icon: const Icon(Icons.play_arrow_rounded),
+                      label: const Text('Quick Demo Login'),
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 16),
+                    const SizedBox(height: 16),
+                  ],
 
                   Text(
                     'Tip: Long-press the MobiDesk logo to access USB hardware developer tools.',

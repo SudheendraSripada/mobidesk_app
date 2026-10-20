@@ -289,7 +289,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                     ),
                     const SizedBox(height: 16),
-                  ] else if (!AppConfig().isSupabaseConfigured && !AppConfig().isDemoMode) ...[
+                  ] else if (!AppConfig().isSupabaseConfigured && !AppConfig().isDemoMode && !AppConfig.allowDemoMode) ...[
                     Container(
                       padding: const EdgeInsets.all(12),
                       decoration: BoxDecoration(

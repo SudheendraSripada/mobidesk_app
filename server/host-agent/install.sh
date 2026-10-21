@@ -21,7 +21,7 @@ if [[ "$(stat -c '%U:%a' "${ENV_FILE}")" != "root:600" ]]; then
   echo "${ENV_FILE} must be owned by root with mode 0600." >&2
   exit 1
 fi
-for key in SUPABASE_URL SUPABASE_ANON_KEY MOBIDESK_PILOT_VM_ID; do
+for key in SUPABASE_URL SUPABASE_ANON_KEY MOBIDESK_PILOT_VM_ID MOBIDESK_GUAC_BASE_URL MOBIDESK_GUAC_USERNAME MOBIDESK_GUAC_PASSWORD; do
   if ! grep -Eq "^(${key})=.+$" "${ENV_FILE}"; then
     echo "Required non-empty ${key} entry is missing from ${ENV_FILE}." >&2
     exit 1

@@ -72,6 +72,28 @@ class ApiSecurityTests(unittest.TestCase):
         self.assertEqual(response.status_code, 403)
         virsh.assert_not_called()
 
+    def test_guest_readiness_uses_verified_pilot_addresses(self):
+        with patch.dict(os.environ, {
+            "MOBIDESK_GUEST_IP": "172.16.33.138",
+            "MOBIDESK_GUEST_RDP_PORT": "3389",
+            "MOBIDESK_GUAC_HOST": "127.0.0.1",
+            "MOBIDESK_GUAC_PORT": "8090",
+        }), patch.object(api, "_port_open", return_value=True) as port_open:
+            self.assertTrue(api._guest_ready())
+        self.assertEqual(
+            port_open.call_args_list,
+            [
+                unittest.mock.call("127.0.0.1", 8090),
+                unittest.mock.call("172.16.33.138", 3389),
+            ],
+        )
+
+    def test_guest_readiness_fails_closed_without_guest_ip(self):
+        with patch.dict(os.environ, {"MOBIDESK_GUEST_IP": ""}):
+            with self.assertRaises(api.HTTPException) as raised:
+                api._guest_ready()
+        self.assertEqual(raised.exception.status_code, 503)
+
 
 if __name__ == "__main__":
     unittest.main()

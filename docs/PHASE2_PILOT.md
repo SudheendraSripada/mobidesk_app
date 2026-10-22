@@ -25,12 +25,13 @@ For a temporary developer demo build only, explicitly add `--dart-define=ALLOW_D
 
 ## Backend prerequisites before live testing
 
-- Create and verify the one real pilot VM row in `public.vms`.
+- Confirm the pilot VM is `win-02` and verify its guest IP remains `172.16.33.138` (the host neighbor table matched the guest's libvirt MAC and TCP port 3389 accepted a connection during the pilot diagnostic).
+- Create and verify the one real pilot VM row in `public.vms`; use its actual UUID for `MOBIDESK_PILOT_VM_ID`.
 - Create exactly one `student_vm_access` mapping for the authorized pilot student.
-- Set `MOBIDESK_PILOT_VM_ID` to that verified row UUID on the host.
-- Install the host agent under a dedicated least-privilege account and verify only the configured libvirt domain can be managed.
-- Keep the service bound to loopback and add it behind the existing private Tailscale Serve configuration. Do not open a public Azure port and do not enable Funnel.
+- Configure `MOBIDESK_GUEST_IP=172.16.33.138`, `MOBIDESK_GUEST_RDP_PORT=3389`, `MOBIDESK_GUAC_HOST=127.0.0.1`, and `MOBIDESK_GUAC_PORT=8090` in the protected host-agent environment file. Re-verify these values before deployment.
+- Install the host agent under a dedicated least-privilege account and verify only `win-02` can be managed.
+- Keep the service bound to loopback and add it behind the existing private Tailscale Serve configuration. Do not open a public port and do not enable Funnel.
 - Verify `/healthz`, then test status/start/readiness/stop using a real signed-in student's Supabase access token and assigned account.
-- Only after those checks, build/install the configured APK and test Phone Mode and USB/AOA Monitor Mode end to end.
+- Only after those checks, build/install the configured APK and test the remote desktop session end to end.
 
 The lifecycle API checks TCP readiness for guest RDP and host-local Guacamole. That is a readiness signal, not proof that a desktop session has successfully connected.

@@ -118,12 +118,15 @@ def _port_open(host: str, port: int) -> bool:
 def _guest_ready() -> bool:
     try:
         guest_port = int(os.getenv("MOBIDESK_GUEST_RDP_PORT", "3389"))
-        guac_port = int(os.getenv("MOBIDESK_GUAC_PORT", "8080"))
+        # Guacamole is published on host port 8090 in the current pilot setup.
+        guac_port = int(os.getenv("MOBIDESK_GUAC_PORT", "8090"))
         if not (1 <= guest_port <= 65535 and 1 <= guac_port <= 65535):
             return False
     except ValueError:
         return False
-    guest_ip = _config("MOBIDESK_GUEST_IP", "192.168.122.21")
+    # Require an explicitly verified guest IP; do not fall back to an example
+    # address from the earlier NAT-network draft.
+    guest_ip = _config("MOBIDESK_GUEST_IP")
     guac_host = _config("MOBIDESK_GUAC_HOST", "127.0.0.1")
     return _port_open(guac_host, guac_port) and _port_open(guest_ip, guest_port)
 

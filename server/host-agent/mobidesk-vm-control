@@ -1,6 +1,6 @@
 #!/bin/sh
 # Install root-owned as /usr/local/sbin/mobidesk-vm-control (mode 0755).
-# The API service may request only these operations on this fixed pilot domain.
+# The API may request only these operations on the fixed win-02 pilot domain.
 set -eu
 
 if [ "$#" -ne 1 ]; then
@@ -13,4 +13,4 @@ case "$1" in
   *) echo "unsupported operation" >&2; exit 64 ;;
 esac
 
-exec /usr/bin/virsh -c qemu:///system "$action" mobidesk-test-01
+exec /usr/bin/virsh -c qemu:///system "$action" win-02

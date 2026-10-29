@@ -113,6 +113,12 @@ class AppConfig {
         : normalizeUrl(newGuacamoleBaseUrl);
     final nextDemoMode = demoMode ?? isDemoMode;
 
+    // Demo identities are only permitted in builds that explicitly opt in.
+    // This also protects developer setup builds from silently enabling mock auth.
+    if (nextDemoMode && !allowDemoMode) {
+      throw StateError('Demo Mode is not enabled in this build.');
+    }
+
     if (!nextDemoMode) {
       final validationError = validateGuacamoleUrl(nextGuacamoleBaseUrl);
       if (validationError != null) throw FormatException(validationError);

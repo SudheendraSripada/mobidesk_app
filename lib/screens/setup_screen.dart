@@ -103,7 +103,9 @@ class _SetupScreenState extends State<SetupScreen> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Configure Supabase and Apache Guacamole endpoints. You can also run in complete offline Demo Mode.',
+                  AppConfig.allowDemoMode
+                      ? 'Configure Supabase and Apache Guacamole endpoints, or choose offline Demo Mode.'
+                      : 'Configure Supabase and Apache Guacamole endpoints for this build.',
                   textAlign: TextAlign.center,
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: colorScheme.onSurfaceVariant,
@@ -196,16 +198,17 @@ class _SetupScreenState extends State<SetupScreen> {
                     padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
                 ),
-                const SizedBox(height: 12),
-
-                OutlinedButton.icon(
-                  onPressed: () => _saveSettings(demoMode: true),
-                  icon: const Icon(Icons.play_circle_outline_rounded),
-                  label: const Text('Use Mock / Demo Mode (Offline)'),
-                  style: OutlinedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(vertical: 14),
+                if (AppConfig.allowDemoMode) ...[
+                  const SizedBox(height: 12),
+                  OutlinedButton.icon(
+                    onPressed: () => _saveSettings(demoMode: true),
+                    icon: const Icon(Icons.play_circle_outline_rounded),
+                    label: const Text('Use Mock / Demo Mode (Offline)'),
+                    style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),

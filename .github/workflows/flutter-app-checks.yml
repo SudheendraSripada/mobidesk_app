@@ -12,6 +12,7 @@ on:
   push:
     branches:
       - "phase2/private-cloud-pc-api"
+      - "build/mobidesk-verified-apk-2026-10-29"
     paths:
       - "lib/**"
       - "test/**"
@@ -36,7 +37,28 @@ jobs:
         run: flutter pub get
       - name: Analyze
         run: flutter analyze
-      - name: Test
+      - name: Test (demo-enabled test configuration)
         run: flutter test --concurrency=1 --dart-define=ALLOW_DEMO_MODE=true
-      - name: Build debug APK
-        run: flutter build apk --debug
+      - name: Verify demo mode is disabled by default
+        run: flutter test test/demo_mode_guard_test.dart --concurrency=1
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install project Gradle wrapper in CI
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.7.1'
+      - name: Generate the missing Gradle wrapper
+        run: cd android && gradle wrapper --gradle-version 9.7.1
+      - name: Android Kotlin unit tests
+        run: cd android && ./gradlew :app:testDebugUnitTest
+      - name: Build setup-preview universal APK
+        run: flutter build apk --release --dart-define=ALLOW_SERVER_SETUP=true
+      - name: Upload setup-preview APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: MobiDesk-setup-preview-universal-${{ github.run_number }}
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 14

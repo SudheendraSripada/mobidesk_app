@@ -48,7 +48,7 @@ jobs:
       - name: Upload setup-preview APK
         uses: actions/upload-artifact@v4
         with:
-          name: MobiDesk-setup-preview-universal-\${{ github.run_number }}
+          name: MobiDesk-setup-preview-universal-${{ github.run_number }}
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
           retention-days: 14
